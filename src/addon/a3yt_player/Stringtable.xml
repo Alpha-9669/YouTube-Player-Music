@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project name="A3YTPlayer">
+    <Package name="A3YTPlayer">
+        <Container name="Core">
+            <Key ID="STR_A3YT_PATCH_NAME">
+                <Original>YouTube Player Music</Original>
+                <English>YouTube Player Music</English>
+                <Russian>YouTube Player Music</Russian>
+            </Key>
+            <Key ID="STR_A3YT_CATEGORY">
+                <Original>YouTube Player</Original>
+                <English>YouTube Player</English>
+                <Russian>YouTube Плеер</Russian>
+            </Key>
+            <Key ID="STR_A3YT_MODULE_DISPLAY_NAME">
+                <Original>Global YouTube Audio</Original>
+                <English>Global YouTube Audio</English>
+                <Russian>Глобальное аудио YouTube</Russian>
+            </Key>
+            <Key ID="STR_A3YT_MODULE_DESCRIPTION">
+                <Original>Manages a global YouTube queue and plays it on every client through the local extension.</Original>
+                <English>Manages a global YouTube queue and plays it on every client through the local extension.</English>
+                <Russian>Управляет общей очередью YouTube и воспроизводит её у всех клиентов через локальное расширение.</Russian>
+            </Key>
+            <Key ID="STR_A3YT_ATTR_URL_NAME">
+                <Original>YouTube URL</Original>
+                <English>YouTube URL</English>
+                <Russian>Ссылка YouTube</Russian>
+            </Key>
+            <Key ID="STR_A3YT_ATTR_URL_TOOLTIP">
+                <Original>Full YouTube video URL for adding into the queue.</Original>
+                <English>Full YouTube video URL for adding into the queue.</English>
+                <Russian>Полная ссылка на YouTube-видео для добавления в очередь.</Russian>
+            </Key>
+            <Key ID="STR_A3YT_ATTR_VOLUME_NAME">
+                <Original>Volume (0-100)</Original>
+                <English>Volume (0-100)</English>
+                <Russian>Громкость (0-100)</Russian>
+            </Key>
+            <Key ID="STR_A3YT_ATTR_VOLUME_TOOLTIP">
+                <Original>Client-side extension volume for the whole queue.</Original>
+                <English>Client-side extension volume for the whole queue.</English>
+                <Russian>Громкость клиентского расширения для всей очереди.</Russian>
+            </Key>
+            <Key ID="STR_A3YT_ATTR_NOTIFY_NAME">
+                <Original>Chat Notification</Original>
+                <English>Chat Notification</English>
+                <Russian>Уведомления в чате</Russian>
+            </Key>
+            <Key ID="STR_A3YT_ATTR_NOTIFY_TOOLTIP">
+                <Original>Shows a short systemChat message on every client.</Original>
+                <English>Shows a short systemChat message on every client.</English>
+                <Russian>Показывает короткое сообщение systemChat у каждого клиента.</Russian>
+            </Key>
+            <Key ID="STR_A3YT_UI_NEW_URL">
+                <Original>New YouTube URL</Original>
+                <English>New YouTube URL</English>
+                <Russian>Новая ссылка YouTube</Russian>
+            </Key>
+            <Key ID="STR_A3YT_UI_ADD">
+                <Original>Add</Original>
+                <English>Add</English>
+                <Russian>Добавить</Russian>
+            </Key>
+            <Key ID="STR_A3YT_UI_VOLUME">
+                <Original>Volume (0-100)</Original>
+                <English>Volume (0-100)</English>
+                <Russian>Громкость (0-100)</Russian>
+            </Key>
+            <Key ID="STR_A3YT_UI_NOTIFY">
+                <Original>Chat Notification</Original>
+                <English>Chat Notification</English>
+                <Russian>Уведомления в чате</Russian>
+            </Key>
+            <Key ID="STR_A3YT_UI_CONSUME_PLAYED">
+                <Original>Remove Played Tracks</Original>
+                <English>Remove Played Tracks</English>
+                <Russian>Удалять проигранные треки</Russian>
+            </Key>
+            <Key ID="STR_A3YT_UI_LOOP_QUEUE">
+                <Original>Loop Queue</Original>
+                <English>Loop Queue</English>
+                <Russian>Закольцевать очередь</Russian>
+            </Key>
+            <Key ID="STR_A3YT_UI_TIMELINE">
+                <Original>Playback Timeline</Original>
+                <English>Playback Timeline</English>
+                <Russian>Шкала воспроизведения</Russian>
+            </Key>
+            <Key ID="STR_A3YT_UI_QUEUE">
+                <Original>Queue</Original>
+                <English>Queue</English>
+                <Russian>Очередь</Russian>
+            </Key>
+            <Key ID="STR_A3YT_UI_START">
+                <Original>Start Playlist</Original>
+                <English>Start Playlist</English>
+                <Russian>Запустить плейлист</Russian>
+            </Key>
+            <Key ID="STR_A3YT_UI_DELETE">
+                <Original>Delete</Original>
+                <English>Delete</English>
+                <Russian>Удалить</Russian>
+            </Key>
+            <Key ID="STR_A3YT_UI_UP">
+                <Original>Up</Original>
+                <English>Up</English>
+                <Russian>Вверх</Russian>
+            </Key>
+            <Key ID="STR_A3YT_UI_DOWN">
+                <Original>Down</Original>
+                <English>Down</English>
+                <Russian>Вниз</Russian>
+            </Key>
+            <Key ID="STR_A3YT_UI_PAUSE_PLAYLIST">
+                <Original>Pause Playlist</Original>
+                <English>Pause Playlist</English>
+                <Russian>Пауза плейлиста</Russian>
+            </Key>
+            <Key ID="STR_A3YT_UI_RESUME_PLAYLIST">
+                <Original>Resume Playlist</Original>
+                <English>Resume Playlist</English>
+                <Russian>Продолжить плейлист</Russian>
+            </Key>
+            <Key ID="STR_A3YT_UI_STOP_PLAYLIST">
+                <Original>Stop Playlist</Original>
+                <English>Stop Playlist</English>
+                <Russian>Остановить плейлист</Russian>
+            </Key>
+            <Key ID="STR_A3YT_HINT_URL_REQUIRED">
+                <Original>YouTube URL is required.</Original>
+                <English>YouTube URL is required.</English>
+                <Russian>Нужно указать ссылку YouTube.</Russian>
+            </Key>
+            <Key ID="STR_A3YT_HINT_QUEUE_EMPTY">
+                <Original>Queue is empty.</Original>
+                <English>Queue is empty.</English>
+                <Russian>Очередь пуста.</Russian>
+            </Key>
+            <Key ID="STR_A3YT_HINT_PLAYLIST_ADDED">
+                <Original>Playlist added: %1 tracks.</Original>
+                <English>Playlist added: %1 tracks.</English>
+                <Russian>Плейлист добавлен: %1 треков.</Russian>
+            </Key>
+            <Key ID="STR_A3YT_HINT_PLAYLIST_FAILED">
+                <Original>Could not load playlist: %1</Original>
+                <English>Could not load playlist: %1</English>
+                <Russian>Не удалось загрузить плейлист: %1</Russian>
+            </Key>
+            <Key ID="STR_A3YT_CHAT_QUEUE_PAUSED">
+                <Original>[A3YT] Queue paused</Original>
+                <English>[A3YT] Queue paused</English>
+                <Russian>[A3YT] Очередь поставлена на паузу</Russian>
+            </Key>
+            <Key ID="STR_A3YT_CHAT_QUEUE_RESUMED">
+                <Original>[A3YT] Queue resumed</Original>
+                <English>[A3YT] Queue resumed</English>
+                <Russian>[A3YT] Очередь продолжена</Russian>
+            </Key>
+            <Key ID="STR_A3YT_CHAT_QUEUE_CLEARED">
+                <Original>[A3YT] Queue cleared</Original>
+                <English>[A3YT] Queue cleared</English>
+                <Russian>[A3YT] Очередь очищена</Russian>
+            </Key>
+            <Key ID="STR_A3YT_CHAT_QUEUE_FINISHED">
+                <Original>[A3YT] Queue finished</Original>
+                <English>[A3YT] Queue finished</English>
+                <Russian>[A3YT] Очередь завершена</Russian>
+            </Key>
+            <Key ID="STR_A3YT_CHAT_QUEUE_PROGRESS">
+                <Original>[A3YT] Track %1/%2: %3</Original>
+                <English>[A3YT] Track %1/%2: %3</English>
+                <Russian>[A3YT] Трек %1/%2: %3</Russian>
+            </Key>
+            <Key ID="STR_A3YT_CHAT_ERROR">
+                <Original>[A3YT] Error: %1</Original>
+                <English>[A3YT] Error: %1</English>
+                <Russian>[A3YT] Ошибка: %1</Russian>
+            </Key>
+            <Key ID="STR_A3YT_CHAT_TIMEOUT">
+                <Original>[A3YT] Timeout while waiting for track %1</Original>
+                <English>[A3YT] Timeout while waiting for track %1</English>
+                <Russian>[A3YT] Таймаут ожидания трека %1</Russian>
+            </Key>
+        </Container>
+    </Package>
+</Project>

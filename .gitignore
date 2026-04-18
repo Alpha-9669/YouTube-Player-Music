@@ -1,0 +1,50 @@
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.code-workspace
+*.suo
+*.user
+*.userosscache
+*.VC.db
+*.VC.opendb
+
+# Native / MSVC artifacts
+*.obj
+*.o
+*.res
+*.ilk
+*.pdb
+*.idb
+*.ipdb
+*.iobj
+*.exp
+*.lib
+
+# .NET build output
+**/bin/
+**/obj/
+
+# Local build output
+/build/
+
+# Generated mod artifacts
+/mod/@YouTube Player Music/*.dll
+/mod/@YouTube Player Music/mod.cpp
+/mod/@YouTube Player Music/addons/*.pbo
+/mod/@YouTube Player Music/addons/*.bisign
+/mod/@YouTube Player Music/Key/*.bikey
+/mod/@A3YTPlayer/
+
+# Generated tool artifacts
+/tools/youtube_player_music.dll
+/tools/youtube_player_music_x64.dll
+/tools/smoke_native.exe
+/tools/_tmp_*.sqf
+
+# Local scratch / temp
+_tmp_config.cpp
+*.tmp
+*.temp
+*.bak
+*.orig

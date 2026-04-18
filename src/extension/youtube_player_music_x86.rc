@@ -1,0 +1,34 @@
+#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 0,5,1,0
+ PRODUCTVERSION 0,5,1,0
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x40004L
+ FILETYPE 0x2L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "Alpha"
+            VALUE "FileDescription", "YouTube Player Music Arma 3 x86 Compatibility Stub"
+            VALUE "FileVersion", "0.5.1.0"
+            VALUE "InternalName", "youtube_player_music"
+            VALUE "OriginalFilename", "youtube_player_music.dll"
+            VALUE "ProductName", "YouTube Player Music"
+            VALUE "ProductVersion", "0.5.1.0"
+            VALUE "LegalCopyright", "Copyright (C) Alpha"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
