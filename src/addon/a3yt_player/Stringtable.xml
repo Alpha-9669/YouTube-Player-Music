@@ -12,6 +12,56 @@
                 <English>YouTube Player</English>
                 <Russian>YouTube Плеер</Russian>
             </Key>
+            <Key ID="STR_A3YT_SETTINGS_CATEGORY">
+                <Original>YouTube Player Music</Original>
+                <English>YouTube Player Music</English>
+                <Russian>YouTube Player Music</Russian>
+            </Key>
+            <Key ID="STR_A3YT_SETTINGS_AUDIO">
+                <Original>Audio</Original>
+                <English>Audio</English>
+                <Russian>Аудио</Russian>
+            </Key>
+            <Key ID="STR_A3YT_SETTING_LOCAL_VOLUME_NAME">
+                <Original>Local volume (0-100)</Original>
+                <English>Local volume (0-100)</English>
+                <Russian>Локальная громкость (0-100)</Russian>
+            </Key>
+            <Key ID="STR_A3YT_SETTING_LOCAL_VOLUME_TOOLTIP">
+                <Original>Client-only volume. By default the final volume is Zeus volume * local volume / 100.</Original>
+                <English>Client-only volume. By default the final volume is Zeus volume * local volume / 100.</English>
+                <Russian>Локальная громкость только для этого клиента. По умолчанию итоговая громкость: громкость Зевса * локальная громкость / 100.</Russian>
+            </Key>
+            <Key ID="STR_A3YT_SETTING_LOCAL_VOLUME_OVERRIDE_NAME">
+                <Original>Use local volume as absolute</Original>
+                <English>Use local volume as absolute</English>
+                <Russian>Использовать локальную громкость как абсолютную</Russian>
+            </Key>
+            <Key ID="STR_A3YT_SETTING_LOCAL_VOLUME_OVERRIDE_TOOLTIP">
+                <Original>When enabled, the final volume is exactly the local volume setting and ignores Zeus volume.</Original>
+                <English>When enabled, the final volume is exactly the local volume setting and ignores Zeus volume.</English>
+                <Russian>Если включено, итоговая громкость равна локальной настройке и игнорирует громкость Зевса.</Russian>
+            </Key>
+            <Key ID="STR_A3YT_PAUSE_LOCAL_VOLUME_MENU">
+                <Original>YOUTUBE PLAYER VOLUME</Original>
+                <English>YOUTUBE PLAYER VOLUME</English>
+                <Russian>ГРОМКОСТЬ YOUTUBE PLAYER</Russian>
+            </Key>
+            <Key ID="STR_A3YT_PAUSE_LOCAL_VOLUME_TITLE">
+                <Original>YouTube Player Volume</Original>
+                <English>YouTube Player Volume</English>
+                <Russian>Громкость YouTube Player</Russian>
+            </Key>
+            <Key ID="STR_A3YT_PAUSE_LOCAL_VOLUME_TOOLTIP">
+                <Original>Open client-only YouTube Player volume settings.</Original>
+                <English>Open client-only YouTube Player volume settings.</English>
+                <Russian>Открыть локальные настройки громкости YouTube Player.</Russian>
+            </Key>
+            <Key ID="STR_A3YT_PAUSE_EFFECTIVE_VOLUME">
+                <Original>Current final volume</Original>
+                <English>Current final volume</English>
+                <Russian>Итоговая громкость</Russian>
+            </Key>
             <Key ID="STR_A3YT_MODULE_DISPLAY_NAME">
                 <Original>Global YouTube Audio</Original>
                 <English>Global YouTube Audio</English>
@@ -61,6 +111,16 @@
                 <Original>Add</Original>
                 <English>Add</English>
                 <Russian>Добавить</Russian>
+            </Key>
+            <Key ID="STR_A3YT_UI_APPLY">
+                <Original>Apply</Original>
+                <English>Apply</English>
+                <Russian>Применить</Russian>
+            </Key>
+            <Key ID="STR_A3YT_UI_CLOSE">
+                <Original>Close</Original>
+                <English>Close</English>
+                <Russian>Закрыть</Russian>
             </Key>
             <Key ID="STR_A3YT_UI_VOLUME">
                 <Original>Volume (0-100)</Original>
@@ -181,6 +241,11 @@
                 <Original>[A3YT] Timeout while waiting for track %1</Original>
                 <English>[A3YT] Timeout while waiting for track %1</English>
                 <Russian>[A3YT] Таймаут ожидания трека %1</Russian>
+            </Key>
+            <Key ID="STR_A3YT_CHAT_LOCAL_VOLUME_APPLIED">
+                <Original>[A3YT] Local volume settings applied</Original>
+                <English>[A3YT] Local volume settings applied</English>
+                <Russian>[A3YT] Локальные настройки громкости применены</Russian>
             </Key>
         </Container>
     </Package>

@@ -26,12 +26,46 @@ $discordInvite = "https://discord.gg/2AftdXY333"
 $localDotnet = Join-Path $HOME ".dotnet\\dotnet.exe"
 $dotnetCommand = Get-Command dotnet.exe -ErrorAction SilentlyContinue
 $dotnet = if (Test-Path $localDotnet) { $localDotnet } elseif ($dotnetCommand) { $dotnetCommand.Source } else { $localDotnet }
-$addonBuilder = if ($env:A3YT_ADDONBUILDER_PATH) { $env:A3YT_ADDONBUILDER_PATH } else { "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Arma 3 Tools\\AddonBuilder\\AddonBuilder.exe" }
-$dsSignFile = if ($env:A3YT_DSSIGNFILE_PATH) { $env:A3YT_DSSIGNFILE_PATH } else { "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Arma 3 Tools\\DSSignFile\\DSSignFile.exe" }
 $keyRoot = Join-Path (Split-Path $root -Parent) "BKey"
 $preferredSigningKeyName = if ($env:A3YT_SIGNING_KEY_NAME) { $env:A3YT_SIGNING_KEY_NAME } else { "Alpha" }
 $script:CachedVsInstallPath = $null
 $script:CachedMsvcRoot = $null
+
+function Resolve-ArmaToolPath {
+    param(
+        [string]$RelativePath,
+        [string]$SpecificEnvName = ""
+    )
+
+    $candidates = @()
+    if ($SpecificEnvName) {
+        $specificPath = [Environment]::GetEnvironmentVariable($SpecificEnvName)
+        if ($specificPath) {
+            $candidates += $specificPath
+        }
+    }
+
+    $toolsRoot = [Environment]::GetEnvironmentVariable("A3YT_ARMA_TOOLS_PATH")
+    if ($toolsRoot) {
+        $candidates += Join-Path $toolsRoot $RelativePath
+    }
+
+    $candidates += @(
+        (Join-Path "D:\\SteamLibrary\\steamapps\\common\\Arma 3 Tools" $RelativePath),
+        (Join-Path "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Arma 3 Tools" $RelativePath)
+    )
+
+    foreach ($candidate in $candidates | Where-Object { $_ } | Select-Object -Unique) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+
+    return ($candidates | Where-Object { $_ } | Select-Object -First 1)
+}
+
+$addonBuilder = Resolve-ArmaToolPath -RelativePath "AddonBuilder\\AddonBuilder.exe" -SpecificEnvName "A3YT_ADDONBUILDER_PATH"
+$dsSignFile = Resolve-ArmaToolPath -RelativePath "DSSignFile\\DSSignFile.exe" -SpecificEnvName "A3YT_DSSIGNFILE_PATH"
 
 function Ensure-Directory {
     param([string]$Path)

@@ -1,3 +1,5 @@
+[] call A3YT_fnc_registerSettings;
+
 if (isServer) then {
     [] spawn A3YT_fnc_monitorCurators;
 };

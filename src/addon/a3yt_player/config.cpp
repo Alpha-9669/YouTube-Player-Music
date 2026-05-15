@@ -5,7 +5,7 @@ class CfgPatches
         name = "$STR_A3YT_PATCH_NAME";
         author = "Alpha";
         requiredVersion = 2.14;
-        requiredAddons[] = {"A3_Modules_F"};
+        requiredAddons[] = {"A3_Modules_F", "cba_ui"};
         units[] = {"A3YT_ModuleYoutubeAudio"};
         weapons[] = {};
     };
@@ -295,6 +295,126 @@ class A3YT_RscDisplayAttributesModuleYoutube: RscDisplayAttributes
     };
 };
 
+class A3YT_RscDisplayLocalVolumeSettings
+{
+    idd = 2611930;
+    movingEnable = 0;
+    enableSimulation = 1;
+    onLoad = "_this call A3YT_fnc_uiLocalVolumeSettings";
+
+    class ControlsBackground
+    {
+        class Background: RscText
+        {
+            idc = -1;
+            x = safeZoneX + (safeZoneW * 0.5) - 0.21;
+            y = safeZoneY + (safeZoneH * 0.5) - 0.16;
+            w = 0.42;
+            h = 0.32;
+            colorBackground[] = {0,0,0,0.82};
+        };
+
+        class Title: RscText
+        {
+            idc = -1;
+            text = "$STR_A3YT_PAUSE_LOCAL_VOLUME_TITLE";
+            x = safeZoneX + (safeZoneW * 0.5) - 0.21;
+            y = safeZoneY + (safeZoneH * 0.5) - 0.16;
+            w = 0.42;
+            h = 0.04;
+            colorBackground[] = {0.55,0.36,0.05,0.95};
+        };
+    };
+
+    class Controls
+    {
+        class VolumeLabel: RscText
+        {
+            idc = -1;
+            text = "$STR_A3YT_SETTING_LOCAL_VOLUME_NAME";
+            x = safeZoneX + (safeZoneW * 0.5) - 0.18;
+            y = safeZoneY + (safeZoneH * 0.5) - 0.095;
+            w = 0.24;
+            h = 0.035;
+            colorBackground[] = {0,0,0,0};
+        };
+
+        class VolumeValue: RscEdit
+        {
+            idc = 2611931;
+            x = safeZoneX + (safeZoneW * 0.5) + 0.08;
+            y = safeZoneY + (safeZoneH * 0.5) - 0.095;
+            w = 0.10;
+            h = 0.035;
+            colorBackground[] = {0,0,0,0.35};
+        };
+
+        class OverrideLabel: RscText
+        {
+            idc = -1;
+            text = "$STR_A3YT_SETTING_LOCAL_VOLUME_OVERRIDE_NAME";
+            x = safeZoneX + (safeZoneW * 0.5) - 0.18;
+            y = safeZoneY + (safeZoneH * 0.5) - 0.04;
+            w = 0.24;
+            h = 0.035;
+            colorBackground[] = {0,0,0,0};
+        };
+
+        class OverrideValue: RscCheckBox
+        {
+            idc = 2611932;
+            x = safeZoneX + (safeZoneW * 0.5) + 0.08;
+            y = safeZoneY + (safeZoneH * 0.5) - 0.04;
+            w = 0.035;
+            h = 0.035;
+        };
+
+        class EffectiveLabel: RscText
+        {
+            idc = -1;
+            text = "$STR_A3YT_PAUSE_EFFECTIVE_VOLUME";
+            x = safeZoneX + (safeZoneW * 0.5) - 0.18;
+            y = safeZoneY + (safeZoneH * 0.5) + 0.02;
+            w = 0.24;
+            h = 0.035;
+            colorBackground[] = {0,0,0,0};
+        };
+
+        class EffectiveValue: RscText
+        {
+            idc = 2611933;
+            text = "";
+            x = safeZoneX + (safeZoneW * 0.5) + 0.08;
+            y = safeZoneY + (safeZoneH * 0.5) + 0.02;
+            w = 0.10;
+            h = 0.035;
+            colorBackground[] = {0,0,0,0.2};
+        };
+
+        class ApplyButton: RscButton
+        {
+            idc = 2611934;
+            text = "$STR_A3YT_UI_APPLY";
+            x = safeZoneX + (safeZoneW * 0.5) - 0.18;
+            y = safeZoneY + (safeZoneH * 0.5) + 0.09;
+            w = 0.16;
+            h = 0.04;
+            onButtonClick = "['apply', ctrlParent (_this select 0)] call A3YT_fnc_uiLocalVolumeSettings";
+        };
+
+        class CloseButton: RscButton
+        {
+            idc = 2611935;
+            text = "$STR_A3YT_UI_CLOSE";
+            x = safeZoneX + (safeZoneW * 0.5) + 0.02;
+            y = safeZoneY + (safeZoneH * 0.5) + 0.09;
+            w = 0.16;
+            h = 0.04;
+            onButtonClick = "closeDialog 0";
+        };
+    };
+};
+
 class CfgFactionClasses
 {
     class NO_CATEGORY;
@@ -314,9 +434,11 @@ class CfgFunctions
         class Core
         {
             file = "\a3yt_player\functions";
+            class applyLocalVolumeSettings {};
             class callExtension {};
             class emptyFunction {};
             class forceStopLocalPlayback {};
+            class getEffectiveVolume {};
             class handleLocalPlayback {};
             class moduleYoutube {};
             class monitorCurators {};
@@ -324,6 +446,8 @@ class CfgFunctions
             {
                 postInit = 1;
             };
+            class registerSettings {};
+            class uiLocalVolumeSettings {};
             class uiModuleYoutube {};
             class zeusAttributes {};
         };

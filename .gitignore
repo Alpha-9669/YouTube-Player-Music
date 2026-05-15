@@ -43,6 +43,7 @@
 /tools/_tmp_*.sqf
 
 # Local scratch / temp
+.setup-temp/
 _tmp_config.cpp
 *.tmp
 *.temp

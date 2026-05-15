@@ -165,17 +165,19 @@ private _previousBaseIndex = missionNamespace getVariable ["A3YT_localQueueBaseI
 
 _queue = [_queue] call _fnc_normalizeQueue;
 private _clampedVolume = (_volume max 0) min 100;
+private _effectiveVolume = [_clampedVolume] call A3YT_fnc_getEffectiveVolume;
 if (_loopQueue) then {
     _consumePlayed = false;
 };
 
 diag_log format [
-    "[A3YT] handleLocalPlayback action=%1 controlAction=%2 queueCount=%3 generation=%4 volume=%5 notify=%6 loop=%7",
+    "[A3YT] handleLocalPlayback action=%1 controlAction=%2 queueCount=%3 generation=%4 volume=%5 effectiveVolume=%6 notify=%7 loop=%8",
     _legacyAction,
     _controlAction,
     count _queue,
     _generation,
     _clampedVolume,
+    _effectiveVolume,
     _notify,
     _loopQueue
 ];
@@ -183,6 +185,7 @@ diag_log format [
 missionNamespace setVariable ["A3YT_localQueueGeneration", _generation];
 missionNamespace setVariable ["A3YT_localQueue", _queue];
 missionNamespace setVariable ["A3YT_localQueueVolume", _clampedVolume];
+missionNamespace setVariable ["A3YT_localQueueEffectiveVolume", _effectiveVolume];
 missionNamespace setVariable ["A3YT_localQueueNotify", _notify];
 missionNamespace setVariable ["A3YT_localQueueBaseIndex", _baseIndex];
 missionNamespace setVariable ["A3YT_localQueueConsumePlayed", _consumePlayed];
@@ -212,8 +215,9 @@ if (_controlAction isEqualTo "resume") exitWith {
 
 if (_controlAction isEqualTo "volume") exitWith {
     missionNamespace setVariable ["A3YT_localQueueVolume", _clampedVolume];
-    private _volumeResult = ["volume", [str _clampedVolume]] call A3YT_fnc_callExtension;
-    diag_log format ["[A3YT] queue_volume result=%1 volume=%2", _volumeResult, _clampedVolume];
+    missionNamespace setVariable ["A3YT_localQueueEffectiveVolume", _effectiveVolume];
+    private _volumeResult = ["volume", [str _effectiveVolume]] call A3YT_fnc_callExtension;
+    diag_log format ["[A3YT] queue_volume result=%1 volume=%2 effectiveVolume=%3", _volumeResult, _clampedVolume, _effectiveVolume];
     "ok|queue_volume"
 };
 
@@ -392,7 +396,9 @@ missionNamespace setVariable ["A3YT_localQueueReportedConsumed", _baseIndex];
             missionNamespace setVariable ["A3YT_localQueueCurrentIndex", _currentIndex];
 
             private _notify = missionNamespace getVariable ["A3YT_localQueueNotify", true];
-            private _volume = missionNamespace getVariable ["A3YT_localQueueVolume", 70];
+            private _sourceVolume = missionNamespace getVariable ["A3YT_localQueueVolume", 70];
+            private _volume = [_sourceVolume] call A3YT_fnc_getEffectiveVolume;
+            missionNamespace setVariable ["A3YT_localQueueEffectiveVolume", _volume];
             private _queueCount = count _queueNow;
 
             if (_notify) then {
@@ -407,10 +413,11 @@ missionNamespace setVariable ["A3YT_localQueueReportedConsumed", _baseIndex];
 
             if (_debugPlayback) then {
                 diag_log format [
-                    "[A3YT][PLAY] play_request generation=%1 index=%2 url=%3 volume=%4 result=%5",
+                    "[A3YT][PLAY] play_request generation=%1 index=%2 url=%3 volume=%4 effectiveVolume=%5 result=%6",
                     _generation,
                     _currentIndex,
                     _url,
+                    _sourceVolume,
                     _volume,
                     _playResult
                 ];
