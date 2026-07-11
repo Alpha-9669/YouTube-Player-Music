@@ -281,6 +281,10 @@ function Invoke-MsvcExtensionBuild {
     $clArgs = @(
         "/nologo",
         "/std:c++17",
+        "/permissive-",
+        "/W4",
+        "/WX",
+        "/Zc:__cplusplus",
         "/GL",
         "/Gw",
         "/Gy",

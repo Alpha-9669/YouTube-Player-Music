@@ -544,14 +544,24 @@ missionNamespace setVariable ["A3YT_localQueueReportedConsumed", _baseIndex];
                             _seekRecoveryAttempts = 0;
                         };
                         private _recentSeek = _lastSeekAt > 0 && {(diag_tickTime - _lastSeekAt) < 45};
-                        private _stallTimeout = if (_recentSeek) then {60} else {20};
+                        private _stallTimeout = if (_recentSeek) then {
+                            90
+                        } else {
+                            if (_durationMs >= 21600000) then {
+                                180
+                            } else {
+                                if (_durationMs >= 3600000) then {90} else {30}
+                            }
+                        };
 
                         if (!_itemDone && {_sawPlaying} && {!(_state isEqualTo "paused")} && {(diag_tickTime - _lastProgressAt) > _stallTimeout}) then {
-                            if (_recentSeek && {_lastSeekMs >= 0} && {_seekRecoveryAttempts < 2}) then {
+                            private _longTrackRecovery = _durationMs >= 3600000 && {_positionMs >= 0};
+                            if (((_recentSeek && {_lastSeekMs >= 0}) || {_longTrackRecovery}) && {_seekRecoveryAttempts < 2}) then {
                                 _lastRecoveredSeekAt = _lastSeekAt;
                                 _seekRecoveryAttempts = _seekRecoveryAttempts + 1;
                                 _lastProgressAt = diag_tickTime;
-                                private _retrySeekText = format ["%1", round _lastSeekMs];
+                                private _recoverySeekMs = if (_recentSeek && {_lastSeekMs >= 0}) then {_lastSeekMs} else {_positionMs};
+                                private _retrySeekText = format ["%1", round _recoverySeekMs];
                                 private _retrySeekResult = ["seek", [_retrySeekText]] call A3YT_fnc_callExtension;
                                 diag_log format [
                                     "[A3YT] queue_seek_recover url=%1 state=%2 positionMs=%3 durationMs=%4 seekMs=%5 attempt=%6 result=%7",
@@ -559,26 +569,26 @@ missionNamespace setVariable ["A3YT_localQueueReportedConsumed", _baseIndex];
                                     _state,
                                     _positionMs,
                                     _durationMs,
-                                    _lastSeekMs,
+                                    _recoverySeekMs,
                                     _seekRecoveryAttempts,
                                     _retrySeekResult
                                 ];
                             } else {
-                            private _notify = missionNamespace getVariable ["A3YT_localQueueNotify", true];
-                            if (_notify) then {
-                                systemChat format [localize "STR_A3YT_CHAT_TIMEOUT", _currentIndex + 1];
-                            };
-                            diag_log format [
-                                "[A3YT] queue_stalled url=%1 state=%2 positionMs=%3 durationMs=%4 status=%5",
-                                _url,
-                                _state,
-                                _positionMs,
-                                _durationMs,
-                                _statusMessage
-                            ];
-                            ["stop", []] call A3YT_fnc_callExtension;
-                            _abortQueue = true;
-                            _itemDone = true;
+                                private _notify = missionNamespace getVariable ["A3YT_localQueueNotify", true];
+                                if (_notify) then {
+                                    systemChat format [localize "STR_A3YT_CHAT_TIMEOUT", _currentIndex + 1];
+                                };
+                                diag_log format [
+                                    "[A3YT] queue_stalled url=%1 state=%2 positionMs=%3 durationMs=%4 status=%5",
+                                    _url,
+                                    _state,
+                                    _positionMs,
+                                    _durationMs,
+                                    _statusMessage
+                                ];
+                                ["stop", []] call A3YT_fnc_callExtension;
+                                _abortQueue = true;
+                                _itemDone = true;
                             };
                         };
                     };

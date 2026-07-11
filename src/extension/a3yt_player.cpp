@@ -1,7 +1,5 @@
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
+#include "extension_common.hpp"
 
-#include <windows.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfplay.h>
@@ -16,7 +14,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -32,7 +29,9 @@ constexpr char kVersion[] = "A3YTPlayer 0.7.0";
 constexpr char kPlaylistMetaSeparator = '\x1D';
 constexpr char kPlaylistRecordSeparator = '\x1E';
 constexpr char kPlaylistFieldSeparator = '\x1F';
+constexpr char kForceRefreshPrefix[] = "a3yt-refresh:";
 constexpr std::int64_t kHundredNsPerMillisecond = 10000;
+constexpr std::int64_t kMaxPositionMs = std::numeric_limits<std::int64_t>::max() / kHundredNsPerMillisecond;
 using ResolveAudioStreamFn = int(__stdcall*)(const char* input, char* output, int outputSize);
 using ResolveTrackTitleFn = int(__stdcall*)(const char* input, char* output, int outputSize);
 using WarmupBackendFn = int(__stdcall*)(char* output, int outputSize);
@@ -45,55 +44,11 @@ int __stdcall YPM2(char* output, int outputSize);
 int __stdcall YPM3(const char* input, char* output, int outputSize);
 }
 
-struct libvlc_instance_t;
-struct libvlc_media_t;
-struct libvlc_media_player_t;
-
-enum class VlcState : int {
-    NothingSpecial = 0,
-    Opening = 1,
-    Buffering = 2,
-    Playing = 3,
-    Paused = 4,
-    Stopped = 5,
-    Ended = 6,
-    Error = 7,
-};
-
-using LibVlcNewFn = libvlc_instance_t*(__cdecl*)(int argc, const char* const* argv);
-using LibVlcReleaseFn = void(__cdecl*)(libvlc_instance_t* instance);
-using LibVlcMediaNewLocationFn = libvlc_media_t*(__cdecl*)(libvlc_instance_t* instance, const char* mrl);
-using LibVlcMediaReleaseFn = void(__cdecl*)(libvlc_media_t* media);
-using LibVlcMediaPlayerNewFromMediaFn = libvlc_media_player_t*(__cdecl*)(libvlc_media_t* media);
-using LibVlcMediaPlayerReleaseFn = void(__cdecl*)(libvlc_media_player_t* player);
-using LibVlcMediaPlayerPlayFn = int(__cdecl*)(libvlc_media_player_t* player);
-using LibVlcMediaPlayerStopFn = void(__cdecl*)(libvlc_media_player_t* player);
-using LibVlcMediaPlayerSetPauseFn = void(__cdecl*)(libvlc_media_player_t* player, int pause);
-using LibVlcMediaPlayerGetStateFn = int(__cdecl*)(libvlc_media_player_t* player);
-using LibVlcMediaPlayerGetTimeFn = std::int64_t(__cdecl*)(libvlc_media_player_t* player);
-using LibVlcMediaPlayerSetTimeFn = int(__cdecl*)(libvlc_media_player_t* player, std::int64_t time);
-using LibVlcMediaPlayerGetLengthFn = std::int64_t(__cdecl*)(libvlc_media_player_t* player);
-using LibVlcMediaPlayerIsSeekableFn = int(__cdecl*)(libvlc_media_player_t* player);
-using LibVlcAudioSetVolumeFn = int(__cdecl*)(libvlc_media_player_t* player, int volume);
-
-struct VlcApi {
-    HMODULE module = nullptr;
-    libvlc_instance_t* instance = nullptr;
-    LibVlcNewFn newFn = nullptr;
-    LibVlcReleaseFn releaseFn = nullptr;
-    LibVlcMediaNewLocationFn mediaNewLocationFn = nullptr;
-    LibVlcMediaReleaseFn mediaReleaseFn = nullptr;
-    LibVlcMediaPlayerNewFromMediaFn mediaPlayerNewFromMediaFn = nullptr;
-    LibVlcMediaPlayerReleaseFn mediaPlayerReleaseFn = nullptr;
-    LibVlcMediaPlayerPlayFn mediaPlayerPlayFn = nullptr;
-    LibVlcMediaPlayerStopFn mediaPlayerStopFn = nullptr;
-    LibVlcMediaPlayerSetPauseFn mediaPlayerSetPauseFn = nullptr;
-    LibVlcMediaPlayerGetStateFn mediaPlayerGetStateFn = nullptr;
-    LibVlcMediaPlayerGetTimeFn mediaPlayerGetTimeFn = nullptr;
-    LibVlcMediaPlayerSetTimeFn mediaPlayerSetTimeFn = nullptr;
-    LibVlcMediaPlayerGetLengthFn mediaPlayerGetLengthFn = nullptr;
-    LibVlcMediaPlayerIsSeekableFn mediaPlayerIsSeekableFn = nullptr;
-    LibVlcAudioSetVolumeFn audioSetVolumeFn = nullptr;
+enum class PlayerState {
+    Playing,
+    Paused,
+    Stopped,
+    Error,
 };
 
 struct PlayerHandle {
@@ -119,7 +74,6 @@ struct PlaylistEntry {
 std::mutex g_mutex;
 std::condition_variable g_commandCv;
 std::condition_variable g_prefetchCv;
-std::thread g_worker;
 bool g_workerStarted = false;
 bool g_shutdownRequested = false;
 std::uint64_t g_commandSerial = 0;
@@ -145,13 +99,9 @@ std::atomic<long long> g_timelineDurationMs{0};
 std::atomic<long long> g_pendingSeekMs{-1};
 std::atomic<bool> g_debugEnabled{false};
 std::mutex g_debugLogMutex;
-std::mutex g_vlcMutex;
-VlcApi g_vlc;
-std::filesystem::path g_moduleDirectory;
 
-std::string LastErrorMessage(DWORD error);
 std::string HResultMessage(const char* prefix, HRESULT hr);
-void DebugLog(const std::string& message);
+void DebugLog(const std::string& message) noexcept;
 
 struct PlaybackBackendThreadState {
     bool initialized = false;
@@ -183,6 +133,10 @@ bool EnsurePlaybackBackendReady(std::string* errorMessage = nullptr) {
         if (errorMessage != nullptr) {
             *errorMessage = HResultMessage("mfstartup", startupHr);
         }
+        if (state.coInitializeHr == S_OK || state.coInitializeHr == S_FALSE) {
+            CoUninitialize();
+        }
+        state = {};
         return false;
     }
 
@@ -210,57 +164,19 @@ void ShutdownPlaybackBackendThread() {
 }
 
 void WriteOutput(char* output, int outputSize, const std::string& value) {
-    if (output == nullptr || outputSize <= 0) {
-        return;
-    }
-
-    const int maxChars = outputSize - 1;
-    const int copyLength = static_cast<int>(std::min<std::size_t>(value.size(), static_cast<std::size_t>(maxChars)));
-    if (copyLength > 0) {
-        std::memcpy(output, value.data(), static_cast<std::size_t>(copyLength));
-    }
-    output[copyLength] = '\0';
+    a3yt::WriteOutput(output, outputSize, value);
 }
 
 std::wstring Utf8ToWide(const std::string& value) {
-    if (value.empty()) {
-        return {};
-    }
-
-    const int required = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
-    if (required <= 0) {
-        return {};
-    }
-
-    std::wstring result(static_cast<std::size_t>(required - 1), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, result.data(), required);
-    return result;
+    return a3yt::Utf8ToWide(value);
 }
 
 std::string WideToUtf8(const std::wstring& value) {
-    if (value.empty()) {
-        return {};
-    }
-
-    const int required = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (required <= 0) {
-        return {};
-    }
-
-    std::string result(static_cast<std::size_t>(required - 1), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, result.data(), required, nullptr, nullptr);
-    return result;
+    return a3yt::WideToUtf8(value);
 }
 
 std::string Sanitize(const std::string& value) {
-    std::string result = value;
-    for (char& ch : result) {
-        if (ch == '\r' || ch == '\n' || ch == '|') {
-            ch = ' ';
-        }
-    }
-
-    return result;
+    return a3yt::SanitizeProtocolField(value);
 }
 
 std::filesystem::path GetDebugLogPath() {
@@ -277,170 +193,59 @@ std::filesystem::path GetDebugLogPath() {
     return path;
 }
 
-void DebugLog(const std::string& message) {
+void DebugLog(const std::string& message) noexcept {
     if (!g_debugEnabled.load()) {
         return;
     }
 
-    SYSTEMTIME localTime{};
-    GetLocalTime(&localTime);
+    try {
+        SYSTEMTIME localTime{};
+        GetLocalTime(&localTime);
 
-    char timestamp[64]{};
-    std::snprintf(
-        timestamp,
-        sizeof(timestamp),
-        "%04u-%02u-%02u %02u:%02u:%02u.%03u",
-        static_cast<unsigned>(localTime.wYear),
-        static_cast<unsigned>(localTime.wMonth),
-        static_cast<unsigned>(localTime.wDay),
-        static_cast<unsigned>(localTime.wHour),
-        static_cast<unsigned>(localTime.wMinute),
-        static_cast<unsigned>(localTime.wSecond),
-        static_cast<unsigned>(localTime.wMilliseconds));
+        char timestamp[64]{};
+        std::snprintf(
+            timestamp,
+            sizeof(timestamp),
+            "%04u-%02u-%02u %02u:%02u:%02u.%03u",
+            static_cast<unsigned>(localTime.wYear),
+            static_cast<unsigned>(localTime.wMonth),
+            static_cast<unsigned>(localTime.wDay),
+            static_cast<unsigned>(localTime.wHour),
+            static_cast<unsigned>(localTime.wMinute),
+            static_cast<unsigned>(localTime.wSecond),
+            static_cast<unsigned>(localTime.wMilliseconds));
 
-    std::lock_guard<std::mutex> lock(g_debugLogMutex);
-    const std::filesystem::path logPath = GetDebugLogPath();
-    std::error_code error;
-    std::filesystem::create_directories(logPath.parent_path(), error);
+        std::lock_guard<std::mutex> lock(g_debugLogMutex);
+        const std::filesystem::path logPath = GetDebugLogPath();
+        std::error_code error;
+        std::filesystem::create_directories(logPath.parent_path(), error);
 
-    std::ofstream logStream(logPath, std::ios::app | std::ios::binary);
-    if (!logStream.is_open()) {
-        return;
-    }
-
-    logStream << "[" << timestamp << "]"
-              << "[tid=" << GetCurrentThreadId() << "] "
-              << message << "\r\n";
-}
-
-template <typename T>
-bool LoadVlcProc(HMODULE module, const char* name, T* target) {
-    if (module == nullptr || name == nullptr || target == nullptr) {
-        return false;
-    }
-
-    *target = reinterpret_cast<T>(GetProcAddress(module, name));
-    return *target != nullptr;
-}
-
-std::string VlcStateName(VlcState state) {
-    switch (state) {
-        case VlcState::NothingSpecial:
-            return "nothing_special";
-        case VlcState::Opening:
-            return "opening";
-        case VlcState::Buffering:
-            return "buffering";
-        case VlcState::Playing:
-            return "playing";
-        case VlcState::Paused:
-            return "paused";
-        case VlcState::Stopped:
-            return "stopped";
-        case VlcState::Ended:
-            return "ended";
-        case VlcState::Error:
-            return "error";
-    }
-
-    return "unknown";
-}
-
-std::filesystem::path GetVlcRuntimeRoot() {
-#if defined(_WIN64)
-    return g_moduleDirectory / L"vlc" / L"win64";
-#else
-    return g_moduleDirectory / L"vlc" / L"win32";
-#endif
-}
-
-bool EnsureVlcReady(std::string* errorMessage = nullptr) {
-    std::lock_guard<std::mutex> lock(g_vlcMutex);
-    if (g_vlc.instance != nullptr) {
-        return true;
-    }
-
-    const auto runtimeRoot = GetVlcRuntimeRoot();
-    const auto libvlcPath = runtimeRoot / L"libvlc.dll";
-    const auto pluginPath = runtimeRoot / L"plugins";
-    if (!std::filesystem::exists(libvlcPath)) {
-        if (errorMessage != nullptr) {
-            *errorMessage = "vlc|runtime_missing";
+        std::ofstream logStream(logPath, std::ios::app | std::ios::binary);
+        if (logStream.is_open()) {
+            logStream << "[" << timestamp << "]"
+                      << "[tid=" << GetCurrentThreadId() << "] "
+                      << message << "\r\n";
         }
-        return false;
+    } catch (...) {
+        // Diagnostics must never terminate the playback worker or escape an ABI export.
     }
-
-    SetEnvironmentVariableW(L"VLC_PLUGIN_PATH", pluginPath.c_str());
-    SetDllDirectoryW(runtimeRoot.c_str());
-
-    HMODULE module = LoadLibraryW(libvlcPath.c_str());
-    if (module == nullptr) {
-        if (errorMessage != nullptr) {
-            *errorMessage = LastErrorMessage(GetLastError());
-        }
-        return false;
-    }
-
-    if (!LoadVlcProc(module, "libvlc_new", &g_vlc.newFn) ||
-        !LoadVlcProc(module, "libvlc_release", &g_vlc.releaseFn) ||
-        !LoadVlcProc(module, "libvlc_media_new_location", &g_vlc.mediaNewLocationFn) ||
-        !LoadVlcProc(module, "libvlc_media_release", &g_vlc.mediaReleaseFn) ||
-        !LoadVlcProc(module, "libvlc_media_player_new_from_media", &g_vlc.mediaPlayerNewFromMediaFn) ||
-        !LoadVlcProc(module, "libvlc_media_player_release", &g_vlc.mediaPlayerReleaseFn) ||
-        !LoadVlcProc(module, "libvlc_media_player_play", &g_vlc.mediaPlayerPlayFn) ||
-        !LoadVlcProc(module, "libvlc_media_player_stop", &g_vlc.mediaPlayerStopFn) ||
-        !LoadVlcProc(module, "libvlc_media_player_set_pause", &g_vlc.mediaPlayerSetPauseFn) ||
-        !LoadVlcProc(module, "libvlc_media_player_get_state", &g_vlc.mediaPlayerGetStateFn) ||
-        !LoadVlcProc(module, "libvlc_media_player_get_time", &g_vlc.mediaPlayerGetTimeFn) ||
-        !LoadVlcProc(module, "libvlc_media_player_set_time", &g_vlc.mediaPlayerSetTimeFn) ||
-        !LoadVlcProc(module, "libvlc_media_player_get_length", &g_vlc.mediaPlayerGetLengthFn) ||
-        !LoadVlcProc(module, "libvlc_media_player_is_seekable", &g_vlc.mediaPlayerIsSeekableFn) ||
-        !LoadVlcProc(module, "libvlc_audio_set_volume", &g_vlc.audioSetVolumeFn)) {
-        if (errorMessage != nullptr) {
-            *errorMessage = "vlc|missing_exports";
-        }
-        FreeLibrary(module);
-        std::memset(&g_vlc, 0, sizeof(g_vlc));
-        return false;
-    }
-
-    static const char* const vlcArgs[] = {
-        "--intf=dummy",
-        "--no-video",
-        "--ignore-config",
-        "--quiet",
-        "--network-caching=250",
-        "--file-caching=100",
-        "--live-caching=100"
-    };
-
-    libvlc_instance_t* instance = g_vlc.newFn(static_cast<int>(std::size(vlcArgs)), vlcArgs);
-    if (instance == nullptr) {
-        if (errorMessage != nullptr) {
-            *errorMessage = "vlc|init_failed";
-        }
-        FreeLibrary(module);
-        std::memset(&g_vlc, 0, sizeof(g_vlc));
-        return false;
-    }
-
-    g_vlc.module = module;
-    g_vlc.instance = instance;
-    DebugLog("vlc|ready|runtime=" + Sanitize(WideToUtf8(runtimeRoot.wstring())));
-    return true;
 }
 
-void ShutdownVlc() {
-    std::lock_guard<std::mutex> lock(g_vlcMutex);
-    if (g_vlc.instance != nullptr && g_vlc.releaseFn != nullptr) {
-        g_vlc.releaseFn(g_vlc.instance);
+bool PinCurrentModule() noexcept {
+    static std::once_flag once;
+    static bool pinned = false;
+    try {
+        std::call_once(once, []() {
+            HMODULE module = nullptr;
+            pinned = GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                reinterpret_cast<LPCWSTR>(&PinCurrentModule),
+                &module) != FALSE;
+        });
+    } catch (...) {
+        return false;
     }
-
-    if (g_vlc.module != nullptr) {
-        FreeLibrary(g_vlc.module);
-    }
-
-    std::memset(&g_vlc, 0, sizeof(g_vlc));
+    return pinned;
 }
 
 bool TryParseBoolLoose(const std::string& rawValue, bool* result) {
@@ -448,17 +253,7 @@ bool TryParseBoolLoose(const std::string& rawValue, bool* result) {
         return false;
     }
 
-    std::string value = rawValue;
-    while (!value.empty() && (value.back() == '\r' || value.back() == '\n' || value.back() == ' ' || value.back() == '\t')) {
-        value.pop_back();
-    }
-
-    std::size_t offset = 0;
-    while (offset < value.size() && (value[offset] == ' ' || value[offset] == '\t')) {
-        ++offset;
-    }
-
-    value.erase(0, offset);
+    std::string value = a3yt::Trim(rawValue);
     if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
         value = value.substr(1, value.size() - 2);
     }
@@ -480,25 +275,11 @@ bool TryParseBoolLoose(const std::string& rawValue, bool* result) {
 }
 
 std::string TrimWhitespace(std::string value) {
-    while (!value.empty() && (value.back() == '\r' || value.back() == '\n' || value.back() == ' ' || value.back() == '\t')) {
-        value.pop_back();
-    }
-
-    std::size_t offset = 0;
-    while (offset < value.size() && (value[offset] == ' ' || value[offset] == '\t')) {
-        ++offset;
-    }
-
-    value.erase(0, offset);
-    return value;
+    return a3yt::Trim(std::move(value));
 }
 
 std::string StripWrappingQuotes(std::string value) {
-    value = TrimWhitespace(std::move(value));
-    if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
-        value = value.substr(1, value.size() - 2);
-    }
-    return value;
+    return a3yt::StripWrappingQuotes(std::move(value));
 }
 
 bool TryParseInt64Loose(const std::string& rawValue, std::int64_t* result) {
@@ -528,11 +309,13 @@ bool TryParseInt64Loose(const std::string& rawValue, std::int64_t* result) {
             return false;
         }
 
-        const long double clamped = std::clamp<long double>(
-            parsed,
-            static_cast<long double>(std::numeric_limits<std::int64_t>::min()),
-            static_cast<long double>(std::numeric_limits<std::int64_t>::max()));
-        *result = static_cast<std::int64_t>(std::llround(clamped));
+        if (parsed >= static_cast<long double>(std::numeric_limits<std::int64_t>::max())) {
+            *result = std::numeric_limits<std::int64_t>::max();
+        } else if (parsed <= static_cast<long double>(std::numeric_limits<std::int64_t>::min())) {
+            *result = std::numeric_limits<std::int64_t>::min();
+        } else {
+            *result = static_cast<std::int64_t>(std::llround(parsed));
+        }
         return true;
     } catch (...) {
     }
@@ -541,21 +324,7 @@ bool TryParseInt64Loose(const std::string& rawValue, std::int64_t* result) {
 }
 
 std::vector<std::string> SplitByChar(const std::string& value, char separator) {
-    std::vector<std::string> parts;
-    std::size_t offset = 0;
-
-    while (offset <= value.size()) {
-        const std::size_t next = value.find(separator, offset);
-        if (next == std::string::npos) {
-            parts.emplace_back(value.substr(offset));
-            break;
-        }
-
-        parts.emplace_back(value.substr(offset, next - offset));
-        offset = next + 1;
-    }
-
-    return parts;
+    return a3yt::Split(value, separator);
 }
 
 std::string GetStageName(PlaybackStage stage) {
@@ -575,27 +344,15 @@ std::string GetStageName(PlaybackStage stage) {
     return "unknown";
 }
 
-std::string LastErrorMessage(DWORD error) {
-    LPWSTR raw = nullptr;
-    const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
-    const DWORD length = FormatMessageW(flags, nullptr, error, 0, reinterpret_cast<LPWSTR>(&raw), 0, nullptr);
-
-    if (length == 0 || raw == nullptr) {
-        return "Win32 error " + std::to_string(error);
-    }
-
-    std::wstring message(raw, static_cast<std::size_t>(length));
-    LocalFree(raw);
-    return Sanitize(WideToUtf8(message));
-}
-
 std::string HResultMessage(const char* prefix, HRESULT hr) {
     LPWSTR raw = nullptr;
     const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
     const DWORD length = FormatMessageW(flags, nullptr, static_cast<DWORD>(hr), 0, reinterpret_cast<LPWSTR>(&raw), 0, nullptr);
 
     if (length == 0 || raw == nullptr) {
-        return std::string(prefix) + "|0x" + std::to_string(static_cast<unsigned long>(hr));
+        char code[11]{};
+        std::snprintf(code, sizeof(code), "0x%08lX", static_cast<unsigned long>(hr));
+        return std::string(prefix) + "|" + code;
     }
 
     std::wstring message(raw, static_cast<std::size_t>(length));
@@ -613,7 +370,9 @@ bool TryReadPropVariantInt64(const PROPVARIANT& value, std::int64_t* result) {
             *result = value.hVal.QuadPart;
             return true;
         case VT_UI8:
-            *result = static_cast<std::int64_t>(value.uhVal.QuadPart);
+            *result = value.uhVal.QuadPart > static_cast<ULONGLONG>(std::numeric_limits<std::int64_t>::max())
+                ? std::numeric_limits<std::int64_t>::max()
+                : static_cast<std::int64_t>(value.uhVal.QuadPart);
             return true;
         case VT_I4:
             *result = value.lVal;
@@ -638,11 +397,53 @@ void ClearPendingSeekState() {
     g_pendingSeekMs.store(-1);
 }
 
-template <typename T>
-void SafeRelease(T*& value) {
-    if (value != nullptr) {
-        value->Release();
-        value = nullptr;
+void ClearPendingVolumeState() {
+    g_pendingVolume.store(-1);
+}
+
+std::int64_t ClampPositionMs(std::int64_t value) {
+    return std::clamp<std::int64_t>(value, 0, kMaxPositionMs);
+}
+
+bool TryParseUInt64Strict(const std::string& rawValue, std::uint64_t* result) {
+    if (result == nullptr) {
+        return false;
+    }
+
+    const std::string value = StripWrappingQuotes(rawValue);
+    if (value.empty() || value.front() == '-') {
+        return false;
+    }
+
+    try {
+        std::size_t consumed = 0;
+        const auto parsed = std::stoull(value, &consumed, 10);
+        if (consumed != value.size()) {
+            return false;
+        }
+        *result = static_cast<std::uint64_t>(parsed);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool TryParseIntStrict(const std::string& rawValue, int* result) {
+    if (result == nullptr) {
+        return false;
+    }
+
+    const std::string value = StripWrappingQuotes(rawValue);
+    try {
+        std::size_t consumed = 0;
+        const long long parsed = std::stoll(value, &consumed, 10);
+        if (consumed != value.size() || parsed < std::numeric_limits<int>::min() || parsed > std::numeric_limits<int>::max()) {
+            return false;
+        }
+        *result = static_cast<int>(parsed);
+        return true;
+    } catch (...) {
+        return false;
     }
 }
 
@@ -785,31 +586,31 @@ private:
     std::string lastErrorMessage_;
 };
 
-VlcState GetPlayerState(PlayerHandle* player) {
+PlayerState GetPlayerState(PlayerHandle* player) {
     if (player == nullptr || player->player == nullptr) {
-        return VlcState::Stopped;
+        return PlayerState::Stopped;
     }
 
     MFP_MEDIAPLAYER_STATE state = MFP_MEDIAPLAYER_STATE_EMPTY;
     const HRESULT hr = player->player->GetState(&state);
     if (FAILED(hr)) {
         player->lastError = HResultMessage("mfplay", hr);
-        return VlcState::Error;
+        return PlayerState::Error;
     }
 
     switch (state) {
         case MFP_MEDIAPLAYER_STATE_PLAYING:
-            return VlcState::Playing;
+            return PlayerState::Playing;
         case MFP_MEDIAPLAYER_STATE_PAUSED:
-            return VlcState::Paused;
+            return PlayerState::Paused;
         case MFP_MEDIAPLAYER_STATE_STOPPED:
         case MFP_MEDIAPLAYER_STATE_EMPTY:
-            return VlcState::Stopped;
+            return PlayerState::Stopped;
         case MFP_MEDIAPLAYER_STATE_SHUTDOWN:
-            return VlcState::Error;
+            return PlayerState::Error;
     }
 
-    return VlcState::Stopped;
+    return PlayerState::Stopped;
 }
 
 std::string GetPlayerLastError(PlayerHandle* player) {
@@ -825,19 +626,14 @@ void UpdateCallbackFromPlayer(PlayerHandle* player, PlayerCallback* callback) {
         return;
     }
 
-    const VlcState state = GetPlayerState(player);
+    const PlayerState state = GetPlayerState(player);
     switch (state) {
-        case VlcState::Playing:
+        case PlayerState::Playing:
             if (callback->MarkPlay()) {
                 DebugLog("mfplay_poll|play");
             }
             break;
-        case VlcState::Ended:
-            if (callback->MarkEnded()) {
-                DebugLog("mfplay_poll|ended");
-            }
-            break;
-        case VlcState::Error:
+        case PlayerState::Error:
             if (callback->MarkError(GetPlayerLastError(player))) {
                 DebugLog("mfplay_poll|error|" + GetPlayerLastError(player));
             }
@@ -898,7 +694,7 @@ bool SetPlayerPositionMs(PlayerHandle* player, std::int64_t requestedMs, std::st
     PROPVARIANT value{};
     PropVariantInit(&value);
     value.vt = VT_I8;
-    value.hVal.QuadPart = requestedMs * kHundredNsPerMillisecond;
+    value.hVal.QuadPart = ClampPositionMs(requestedMs) * kHundredNsPerMillisecond;
 
     const HRESULT hr = player->player->SetPosition(MFP_POSITIONTYPE_100NS, &value);
     PropVariantClear(&value);
@@ -1071,7 +867,7 @@ HRESULT StartPlayerFromUrlAtPosition(
     PROPVARIANT startValue{};
     PropVariantInit(&startValue);
     startValue.vt = VT_I8;
-    startValue.hVal.QuadPart = std::max<std::int64_t>(0, startPositionMs) * kHundredNsPerMillisecond;
+    startValue.hVal.QuadPart = ClampPositionMs(startPositionMs) * kHundredNsPerMillisecond;
     const HRESULT positionHr = mediaItem->SetStartStopPosition(&MFP_POSITIONTYPE_100NS, &startValue, nullptr, nullptr);
     PropVariantClear(&startValue);
     if (FAILED(positionHr)) {
@@ -1103,10 +899,15 @@ HRESULT StartPlayerFromUrlAtPosition(
     return S_OK;
 }
 
-bool ResolveAudioStream(const std::string& input, std::wstring* mediaUrl, std::string* errorMessage) {
+bool ResolveAudioStream(
+    const std::string& input,
+    std::wstring* mediaUrl,
+    std::string* errorMessage,
+    bool forceRefresh = false) {
     const auto startedAt = std::chrono::steady_clock::now();
     std::vector<char> buffer(32768, '\0');
-    const int status = YPM0(input.c_str(), buffer.data(), static_cast<int>(buffer.size()));
+    const std::string resolverInput = forceRefresh ? std::string(kForceRefreshPrefix) + input : input;
+    const int status = YPM0(resolverInput.c_str(), buffer.data(), static_cast<int>(buffer.size()));
     const std::string payload(buffer.data());
     const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt).count();
     if (status != 0) {
@@ -1517,9 +1318,9 @@ bool SeekPlayerInPlace(
 
             if (largeSeek && reachedTarget && !paused) {
                 const auto settledFor = std::chrono::steady_clock::now() - reachedTargetAt;
-                const VlcState state = GetPlayerState(player);
+                const PlayerState state = GetPlayerState(player);
                 if (settledFor >= std::chrono::milliseconds(280) &&
-                    (playRetryIssued || state == VlcState::Playing) &&
+                    (playRetryIssued || state == PlayerState::Playing) &&
                     currentPositionMs >= std::max<std::int64_t>(0, requestedMs - toleranceMs)) {
                     const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startedAt).count();
                     DebugLog("seek_in_place|ok|paused=0|elapsedMs=" + std::to_string(elapsedMs) +
@@ -1761,8 +1562,8 @@ SeekRestartResult WaitForPlayerPlaybackReady(
             g_timelinePositionMs.store(currentPositionMs);
         }
 
-        const VlcState state = GetPlayerState(player);
-        if ((callback != nullptr && callback->SawPlay()) || state == VlcState::Playing) {
+        const PlayerState state = GetPlayerState(player);
+        if ((callback != nullptr && callback->SawPlay()) || state == PlayerState::Playing) {
             if (observedMsOut != nullptr) {
                 *observedMsOut = lastObservedMs;
             }
@@ -1789,6 +1590,7 @@ bool RestartPlayerAtPosition(
     const auto startedAt = std::chrono::steady_clock::now();
     DebugLog("seek_restart|begin|serial=" + std::to_string(serial) + "|requestedMs=" + std::to_string(requestedMs) +
              "|paused=" + std::to_string(paused ? 1 : 0));
+    const std::int64_t previousDurationMs = g_timelineDurationMs.load();
     StopAndReleasePlayer(player);
     if (callback != nullptr) {
         callback->Release();
@@ -1796,7 +1598,7 @@ bool RestartPlayerAtPosition(
     }
 
     ResetTimelineState();
-    const bool preferAutoplayRestart = requestedMs >= 900000 || g_timelineDurationMs.load() >= 1800000;
+    const bool preferAutoplayRestart = requestedMs >= 900000 || previousDurationMs >= 1800000;
 
     auto runAutoplayRecovery = [&]() -> bool {
         DebugLog("seek_restart|recover_begin|requestedMs=" + std::to_string(requestedMs) +
@@ -1939,7 +1741,7 @@ bool ApplyPendingSeekIfNeeded(
     if (durationMs > 0) {
         requestedMs = std::min(requestedMs, durationMs);
     }
-    requestedMs = std::max<std::int64_t>(0, requestedMs);
+    requestedMs = ClampPositionMs(requestedMs);
 
     if (SeekPlayerInPlace(player, requestedMs, serial, paused)) {
         return true;
@@ -2025,7 +1827,7 @@ void WorkerMain() {
 
         if (FAILED(hr)) {
             DebugLog("worker_command|start_fail_final|serial=" + std::to_string(handledSerial) + "|error=start_failed");
-            SetStateIfCurrent(handledSerial, PlaybackStage::Error, "vlc|start_failed");
+            SetStateIfCurrent(handledSerial, PlaybackStage::Error, "mfplay|start_failed");
             lock.lock();
             continue;
         }
@@ -2035,6 +1837,7 @@ void WorkerMain() {
         bool failed = false;
         bool started = false;
         bool paused = false;
+        int automaticRecoveryAttempts = 0;
         while (!HasNewCommand(handledSerial)) {
             bool pauseRequested = false;
             {
@@ -2083,7 +1886,38 @@ void WorkerMain() {
             UpdateTimelineFromPlayer(player, callback);
 
             if (callback != nullptr && callback->SawError()) {
-                SetStateIfCurrent(handledSerial, PlaybackStage::Error, callback->LastErrorMessage());
+                const std::string playbackError = callback->LastErrorMessage();
+                const std::int64_t recoveryPositionMs = ReadPlayerPositionMs(player);
+                std::string refreshError;
+                if (started && recoveryPositionMs >= 0 && automaticRecoveryAttempts < 2) {
+                    ++automaticRecoveryAttempts;
+                    SetStateIfCurrent(handledSerial, PlaybackStage::Resolving, "");
+                    DebugLog("playback_recovery|begin|attempt=" + std::to_string(automaticRecoveryAttempts) +
+                             "|positionMs=" + std::to_string(recoveryPositionMs));
+
+                    std::wstring refreshedUrl;
+                    if (ResolveAudioStream(url, &refreshedUrl, &refreshError, true) &&
+                        RestartPlayerAtPosition(
+                            player,
+                            callback,
+                            refreshedUrl,
+                            activeVolume,
+                            recoveryPositionMs,
+                            handledSerial,
+                            paused)) {
+                        resolvedUrl = std::move(refreshedUrl);
+                        DebugLog("playback_recovery|ok|attempt=" + std::to_string(automaticRecoveryAttempts));
+                        continue;
+                    }
+
+                    DebugLog("playback_recovery|fail|attempt=" + std::to_string(automaticRecoveryAttempts) +
+                             "|error=" + Sanitize(refreshError));
+                }
+
+                const std::string finalError = !refreshError.empty()
+                    ? refreshError
+                    : (callback != nullptr ? callback->LastErrorMessage() : playbackError);
+                SetStateIfCurrent(handledSerial, PlaybackStage::Error, finalError);
                 failed = true;
                 break;
             }
@@ -2137,8 +1971,7 @@ void EnsureWorkerStartedLocked() {
         return;
     }
 
-    g_worker = std::thread(WorkerMain);
-    g_worker.detach();
+    std::thread(WorkerMain).detach();
     g_workerStarted = true;
 }
 
@@ -2161,10 +1994,7 @@ std::string GetTimeline() {
 }
 
 std::pair<std::string, int> HandleCommand(const std::string& command, const std::vector<std::string>& args) {
-    std::string lower = command;
-    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
+    const std::string lower = a3yt::ToLowerAscii(command);
 
     if (lower.empty() || lower == "version" || lower == "ping" || lower == "help") {
         return {std::string("ok|version|") + kVersion, 0};
@@ -2217,6 +2047,7 @@ std::pair<std::string, int> HandleCommand(const std::string& command, const std:
         g_lastError.clear();
         ResetTimelineState();
         ClearPendingSeekState();
+        ClearPendingVolumeState();
         g_commandCv.notify_one();
         DebugLog("command|stop");
         return {"ok|stopped", 0};
@@ -2235,7 +2066,7 @@ std::pair<std::string, int> HandleCommand(const std::string& command, const std:
                 return {"err|invalid_argument|volume", 2};
             }
 
-            volume = static_cast<int>(parsedVolume);
+            volume = static_cast<int>(std::clamp<std::int64_t>(parsedVolume, 0, 100));
         }
 
         volume = std::clamp(volume, 0, 100);
@@ -2252,6 +2083,7 @@ std::pair<std::string, int> HandleCommand(const std::string& command, const std:
             g_lastError.clear();
             ResetTimelineState();
             ClearPendingSeekState();
+            ClearPendingVolumeState();
         }
 
         g_commandCv.notify_one();
@@ -2295,7 +2127,7 @@ std::pair<std::string, int> HandleCommand(const std::string& command, const std:
             return {"err|invalid_argument|volume", 2};
         }
 
-        const int volume = std::clamp(static_cast<int>(parsedVolume), 0, 100);
+        const int volume = static_cast<int>(std::clamp<std::int64_t>(parsedVolume, 0, 100));
         {
             std::lock_guard<std::mutex> lock(g_mutex);
             EnsureWorkerStartedLocked();
@@ -2366,7 +2198,7 @@ std::pair<std::string, int> HandleCommand(const std::string& command, const std:
             return {"err|invalid_argument|position_ms", 2};
         }
 
-        requestedMs = std::max<std::int64_t>(0, requestedMs);
+        requestedMs = ClampPositionMs(requestedMs);
         {
             std::lock_guard<std::mutex> lock(g_mutex);
             EnsureWorkerStartedLocked();
@@ -2413,10 +2245,7 @@ std::pair<std::string, int> HandleCommand(const std::string& command, const std:
 
         std::uint64_t token = 0;
         int index = -1;
-        try {
-            token = static_cast<std::uint64_t>(std::stoull(StripWrappingQuotes(args[0])));
-            index = std::stoi(StripWrappingQuotes(args[1]));
-        } catch (...) {
+        if (!TryParseUInt64Strict(args[0], &token) || !TryParseIntStrict(args[1], &index)) {
             return {"err|invalid_argument|token_or_index", 2};
         }
 
@@ -2473,11 +2302,6 @@ std::pair<std::string, std::vector<std::string>> ParseStringCommand(const std::s
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(module);
-        wchar_t modulePath[MAX_PATH]{};
-        const DWORD length = GetModuleFileNameW(module, modulePath, static_cast<DWORD>(std::size(modulePath)));
-        if (length > 0 && length < std::size(modulePath)) {
-            g_moduleDirectory = std::filesystem::path(modulePath).parent_path();
-        }
     } else if (reason == DLL_PROCESS_DETACH && reserved == nullptr) {
         {
             std::lock_guard<std::mutex> lock(g_mutex);
@@ -2495,21 +2319,44 @@ extern "C" __declspec(dllexport) void __stdcall RVExtensionVersion(char* output,
 }
 
 extern "C" __declspec(dllexport) void __stdcall RVExtension(char* output, int outputSize, const char* function) {
-    const auto payload = ParseStringCommand(function == nullptr ? std::string() : std::string(function));
-    const auto result = HandleCommand(payload.first, payload.second);
-    WriteOutput(output, outputSize, result.first);
+    try {
+        if (!PinCurrentModule()) {
+            WriteOutput(output, outputSize, "err|internal|module_pin_failed");
+            return;
+        }
+        const auto payload = ParseStringCommand(function == nullptr ? std::string() : std::string(function));
+        const auto result = HandleCommand(payload.first, payload.second);
+        WriteOutput(output, outputSize, result.first);
+    } catch (const std::exception&) {
+        WriteOutput(output, outputSize, "err|internal|exception");
+    } catch (...) {
+        WriteOutput(output, outputSize, "err|internal|unknown");
+    }
 }
 
 extern "C" __declspec(dllexport) int __stdcall RVExtensionArgs(char* output, int outputSize, const char* function, const char** args, int argCount) {
-    std::vector<std::string> values;
-    if (args != nullptr && argCount > 0) {
-        values.reserve(static_cast<std::size_t>(argCount));
-        for (int index = 0; index < argCount; ++index) {
-            values.emplace_back(args[index] == nullptr ? "" : args[index]);
+    try {
+        if (!PinCurrentModule()) {
+            WriteOutput(output, outputSize, "err|internal|module_pin_failed");
+            return 4;
         }
-    }
 
-    const auto result = HandleCommand(function == nullptr ? std::string() : std::string(function), values);
-    WriteOutput(output, outputSize, result.first);
-    return result.second;
+        std::vector<std::string> values;
+        if (args != nullptr && argCount > 0) {
+            values.reserve(static_cast<std::size_t>(argCount));
+            for (int index = 0; index < argCount; ++index) {
+                values.emplace_back(args[index] == nullptr ? "" : args[index]);
+            }
+        }
+
+        const auto result = HandleCommand(function == nullptr ? std::string() : std::string(function), values);
+        WriteOutput(output, outputSize, result.first);
+        return result.second;
+    } catch (const std::exception&) {
+        WriteOutput(output, outputSize, "err|internal|exception");
+        return 4;
+    } catch (...) {
+        WriteOutput(output, outputSize, "err|internal|unknown");
+        return 4;
+    }
 }

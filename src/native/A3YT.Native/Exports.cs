@@ -11,7 +11,7 @@ namespace A3YT.Native;
 
 public static partial class Exports
 {
-    private const string Version = "A3YTPlayer 0.5.3-backend";
+    private const string ForceRefreshPrefix = "a3yt-refresh:";
     private static readonly string FallbackInnertubeApiKey = DecodeXorString(0x5A,
     [
         27, 19, 32, 59, 9, 35, 27, 21, 5, 28, 16, 104, 9, 54, 43, 15, 98, 11, 110, 9,
@@ -28,21 +28,18 @@ public static partial class Exports
     private static readonly Regex ApiKeyRegex = new("\"INNERTUBE_API_KEY\":\"([^\"]+)\"", RegexOptions.Compiled);
     private static readonly Regex ClientVersionRegex = new("\"INNERTUBE_CLIENT_VERSION\":\"([^\"]+)\"", RegexOptions.Compiled);
     private static readonly Regex VisitorDataRegex = new("\"visitorData\":\"([^\"]+)\"", RegexOptions.Compiled);
+    private static readonly Regex VideoIdRegex = new("^[A-Za-z0-9_-]{11}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex PlaylistIdRegex = new("^[A-Za-z0-9_-]{10,128}$", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     private static readonly Lazy<HttpClient> Http = new(CreateHttpClient);
-    private static readonly object StreamCacheLock = new();
-    private static readonly object TitleCacheLock = new();
-    private static readonly object WatchContextCacheLock = new();
     private static readonly YoutubeClientProfile[] ClientProfiles =
     [
         new("ANDROID_VR", "28", "1.60.19", "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 13; Quest 3; GB) gzip"),
         new("ANDROID", "3", "19.44.38", "com.google.android.youtube/19.44.38 (Linux; U; Android 13; Pixel 7 Pro Build/TQ3A.230805.001) gzip")
     ];
 
-    private static readonly Dictionary<string, StreamCacheEntry> StreamCache = new(StringComparer.Ordinal);
-    private static readonly Dictionary<string, TitleCacheEntry> TitleCache = new(StringComparer.Ordinal);
-    private static string? CachedInnertubeApiKey;
-    private static string? CachedVisitorData;
-    private static DateTimeOffset CachedWatchContextUntilUtc = DateTimeOffset.MinValue;
+    private static readonly ExpiringCache<string> StreamCache = new(MaxStreamCacheEntries, StreamCacheTtl);
+    private static readonly ExpiringCache<string> TitleCache = new(MaxTitleCacheEntries, TitleCacheTtl);
+    private static readonly ExpiringCache<WatchPageContext> WatchContextCache = new(1, WatchContextCacheTtl);
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)], EntryPoint = "YPM0")]
     public static unsafe int A3YTResolveAudioStreamUtf8(byte* input, byte* output, int outputSize)
@@ -55,7 +52,7 @@ public static partial class Exports
     {
         try
         {
-            var url = PtrToAnsi(input).Trim();
+            var url = PtrToUtf8(input).Trim();
             if (string.IsNullOrWhiteSpace(url))
             {
                 WriteUtf8Output(output, outputSize, "err|missing_argument|url");
@@ -63,8 +60,7 @@ public static partial class Exports
             }
 
             var title = ResolveTrackTitleAsync(url).GetAwaiter().GetResult();
-            WriteUtf8Output(output, outputSize, title);
-            return 0;
+            return WriteSuccessOutput(output, outputSize, title);
         }
         catch (Exception ex)
         {
@@ -94,7 +90,7 @@ public static partial class Exports
     {
         try
         {
-            var url = PtrToAnsi(input).Trim();
+            var url = PtrToUtf8(input).Trim();
             if (string.IsNullOrWhiteSpace(url))
             {
                 WriteUtf8Output(output, outputSize, "err|missing_argument|url");
@@ -102,8 +98,7 @@ public static partial class Exports
             }
 
             var playlist = ResolvePlaylistAsync(url).GetAwaiter().GetResult();
-            WriteUtf8Output(output, outputSize, BuildPlaylistPayload(playlist));
-            return 0;
+            return WriteSuccessOutput(output, outputSize, BuildPlaylistPayload(playlist));
         }
         catch (Exception ex)
         {
@@ -116,7 +111,7 @@ public static partial class Exports
     {
         try
         {
-            var url = PtrToAnsi(input).Trim();
+            var url = PtrToUtf8(input).Trim();
             if (string.IsNullOrWhiteSpace(url))
             {
                 WriteUtf8Output(output, outputSize, "err|missing_argument|url");
@@ -124,8 +119,7 @@ public static partial class Exports
             }
 
             var streamUrl = ResolveAudioStreamUrlAsync(url).GetAwaiter().GetResult();
-            WriteUtf8Output(output, outputSize, streamUrl);
-            return 0;
+            return WriteSuccessOutput(output, outputSize, streamUrl);
         }
         catch (Exception ex)
         {
@@ -137,6 +131,12 @@ public static partial class Exports
     private static async Task<string> ResolveAudioStreamUrlAsync(string input)
     {
         var normalizedInput = input.Trim();
+        var forceRefresh = normalizedInput.StartsWith(ForceRefreshPrefix, StringComparison.Ordinal);
+        if (forceRefresh)
+        {
+            normalizedInput = normalizedInput[ForceRefreshPrefix.Length..].Trim();
+        }
+
         var videoId = ExtractVideoId(normalizedInput);
         if (string.IsNullOrWhiteSpace(videoId))
         {
@@ -144,25 +144,34 @@ public static partial class Exports
         }
 
         var cacheKey = "video:" + videoId;
-        var cachedStreamUrl = TryGetCachedStreamUrl(cacheKey);
+        var cachedStreamUrl = forceRefresh ? null : TryGetCachedStreamUrl(cacheKey);
         if (!string.IsNullOrEmpty(cachedStreamUrl))
         {
             return cachedStreamUrl;
         }
 
-        string? lastError = null;
         var cachedWatchContext = GetCachedWatchPageContext();
         Task<WatchPageContext?>? watchContextTask = cachedWatchContext is null
             ? FetchAndCacheWatchPageContextAsync(videoId, CancellationToken.None)
             : null;
 
-        var streamUrl = await TryResolveAcrossProfilesAsync(clientProfile =>
-            TryResolveAudioStreamUrlAsync(
-                videoId,
-                clientProfile,
-                CancellationToken.None,
-                cachedWatchContext?.ApiKey,
-                cachedWatchContext?.VisitorData));
+        var loginRequired = false;
+        string? streamUrl = null;
+        try
+        {
+            streamUrl = await TryResolveAcrossProfilesAsync(clientProfile =>
+                TryResolveAudioStreamUrlAsync(
+                    videoId,
+                    clientProfile,
+                    CancellationToken.None,
+                    cachedWatchContext?.ApiKey,
+                    cachedWatchContext?.VisitorData));
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("requires sign-in", StringComparison.Ordinal))
+        {
+            loginRequired = true;
+            // Retry below with a fresh visitor context before reporting the restriction.
+        }
         if (!string.IsNullOrWhiteSpace(streamUrl))
         {
             RememberStreamUrl(cacheKey, streamUrl);
@@ -184,8 +193,9 @@ public static partial class Exports
             }
         }
 
-        lastError ??= "No playable audio stream found.";
-        throw new InvalidOperationException(lastError);
+        throw new InvalidOperationException(loginRequired
+            ? "YouTube requires sign-in for this video."
+            : "No playable audio stream found.");
     }
 
     private static async Task WarmupAsync()
@@ -223,13 +233,23 @@ public static partial class Exports
             ? FetchAndCacheWatchPageContextAsync(videoId, CancellationToken.None)
             : null;
 
-        var title = await TryResolveAcrossProfilesAsync(clientProfile =>
-            TryResolveTrackTitleAsync(
-                videoId,
-                clientProfile,
-                CancellationToken.None,
-                cachedWatchContext?.ApiKey,
-                cachedWatchContext?.VisitorData));
+        var loginRequired = false;
+        string? title = null;
+        try
+        {
+            title = await TryResolveAcrossProfilesAsync(clientProfile =>
+                TryResolveTrackTitleAsync(
+                    videoId,
+                    clientProfile,
+                    CancellationToken.None,
+                    cachedWatchContext?.ApiKey,
+                    cachedWatchContext?.VisitorData));
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("requires sign-in", StringComparison.Ordinal))
+        {
+            loginRequired = true;
+            // Retry below with a fresh visitor context before reporting the restriction.
+        }
         if (!string.IsNullOrWhiteSpace(title))
         {
             RememberTitle(videoId, title);
@@ -251,12 +271,15 @@ public static partial class Exports
             }
         }
 
-        throw new InvalidOperationException("Could not resolve track title.");
+        throw new InvalidOperationException(loginRequired
+            ? "YouTube requires sign-in for this video."
+            : "Could not resolve track title.");
     }
 
     private static async Task<string?> TryResolveAcrossProfilesAsync(Func<YoutubeClientProfile, Task<string?>> resolver)
     {
         var tasks = new List<Task<string?>>(ClientProfiles.Length);
+        var loginRequired = false;
         foreach (var clientProfile in ClientProfiles)
         {
             tasks.Add(TryResolveProfileAsync(clientProfile, resolver));
@@ -267,11 +290,26 @@ public static partial class Exports
             var completedTask = await Task.WhenAny(tasks);
             tasks.Remove(completedTask);
 
-            var result = await completedTask;
+            string? result;
+            try
+            {
+                result = await completedTask;
+            }
+            catch (YoutubeLoginRequiredException)
+            {
+                loginRequired = true;
+                continue;
+            }
+
             if (!string.IsNullOrWhiteSpace(result))
             {
                 return result;
             }
+        }
+
+        if (loginRequired)
+        {
+            throw new InvalidOperationException("YouTube requires sign-in for this video.");
         }
 
         return null;
@@ -282,6 +320,10 @@ public static partial class Exports
         try
         {
             return await resolver(clientProfile);
+        }
+        catch (YoutubeLoginRequiredException)
+        {
+            throw;
         }
         catch
         {
@@ -374,6 +416,7 @@ public static partial class Exports
         }
 
         using var document = JsonDocument.Parse(payload);
+        ThrowIfLoginRequired(document.RootElement);
         if (TrySelectAudioUrl(document.RootElement, out var audioUrl))
         {
             return audioUrl;
@@ -413,7 +456,19 @@ public static partial class Exports
         }
 
         using var document = JsonDocument.Parse(payload);
+        ThrowIfLoginRequired(document.RootElement);
         return TryExtractTitle(document.RootElement, out var title) ? title : null;
+    }
+
+    private static void ThrowIfLoginRequired(JsonElement root)
+    {
+        if (root.TryGetProperty("playabilityStatus", out var playabilityStatus) &&
+            playabilityStatus.TryGetProperty("status", out var statusElement) &&
+            statusElement.ValueKind == JsonValueKind.String &&
+            statusElement.GetString()?.Equals("LOGIN_REQUIRED", StringComparison.Ordinal) == true)
+        {
+            throw new YoutubeLoginRequiredException();
+        }
     }
 
     private static bool TrySelectAudioUrl(JsonElement root, out string audioUrl)
@@ -478,20 +533,53 @@ public static partial class Exports
 
         var html = await response.Content.ReadAsStringAsync(cancellationToken);
         var initialDataJson = ExtractInitialDataJson(html);
-        if (string.IsNullOrWhiteSpace(initialDataJson))
-        {
-            throw new InvalidOperationException("Could not extract playlist metadata.");
-        }
-
         var apiKeyMatch = ApiKeyRegex.Match(html);
         var visitorDataMatch = VisitorDataRegex.Match(html);
         var clientVersionMatch = ClientVersionRegex.Match(html);
 
+        var apiKey = apiKeyMatch.Success ? apiKeyMatch.Groups[1].Value : FallbackInnertubeApiKey;
+        var visitorData = visitorDataMatch.Success ? visitorDataMatch.Groups[1].Value : null;
+        var clientVersion = clientVersionMatch.Success ? clientVersionMatch.Groups[1].Value : "2.20240224.11.00";
+
+        if (string.IsNullOrWhiteSpace(initialDataJson))
+        {
+            using var browseDocument = await FetchPlaylistBrowseDocumentAsync(
+                playlistId,
+                apiKey,
+                visitorData,
+                clientVersion,
+                cancellationToken);
+            initialDataJson = browseDocument.RootElement.GetRawText();
+        }
+
         return new PlaylistPageContext(
             initialDataJson,
-            apiKeyMatch.Success ? apiKeyMatch.Groups[1].Value : null,
-            visitorDataMatch.Success ? visitorDataMatch.Groups[1].Value : null,
-            clientVersionMatch.Success ? clientVersionMatch.Groups[1].Value : null);
+            apiKey,
+            visitorData,
+            clientVersion);
+    }
+
+    private static async Task<JsonDocument> FetchPlaylistBrowseDocumentAsync(
+        string playlistId,
+        string apiKey,
+        string? visitorData,
+        string clientVersion,
+        CancellationToken cancellationToken)
+    {
+        using var request = CreateBrowseRequest(apiKey, visitorData, clientVersion);
+        request.Content = new StringContent(
+            BuildBrowsePlaylistRequestBody(playlistId, clientVersion, visitorData),
+            Encoding.UTF8,
+            "application/json");
+
+        using var response = await Http.Value.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException($"Playlist browse returned HTTP {(int)response.StatusCode}.");
+        }
+
+        return JsonDocument.Parse(payload);
     }
 
     private static async Task<JsonDocument> FetchPlaylistContinuationDocumentAsync(
@@ -501,18 +589,7 @@ public static partial class Exports
         string clientVersion,
         CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"https://www.youtube.com/youtubei/v1/browse?key={Uri.EscapeDataString(apiKey)}&prettyPrint=false");
-
-        request.Headers.TryAddWithoutValidation("Origin", "https://www.youtube.com");
-        request.Headers.TryAddWithoutValidation("X-Youtube-Client-Name", "1");
-        request.Headers.TryAddWithoutValidation("X-Youtube-Client-Version", clientVersion);
-        request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0");
-        if (!string.IsNullOrWhiteSpace(visitorData))
-        {
-            request.Headers.TryAddWithoutValidation("X-Goog-Visitor-Id", visitorData);
-        }
+        using var request = CreateBrowseRequest(apiKey, visitorData, clientVersion);
 
         request.Content = new StringContent(
             BuildBrowseContinuationRequestBody(continuationToken, clientVersion, visitorData),
@@ -527,6 +604,24 @@ public static partial class Exports
         }
 
         return JsonDocument.Parse(payload);
+    }
+
+    private static HttpRequestMessage CreateBrowseRequest(string apiKey, string? visitorData, string clientVersion)
+    {
+        var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"https://www.youtube.com/youtubei/v1/browse?key={Uri.EscapeDataString(apiKey)}&prettyPrint=false");
+
+        request.Headers.TryAddWithoutValidation("Origin", "https://www.youtube.com");
+        request.Headers.TryAddWithoutValidation("X-Youtube-Client-Name", "1");
+        request.Headers.TryAddWithoutValidation("X-Youtube-Client-Version", clientVersion);
+        request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0");
+        if (!string.IsNullOrWhiteSpace(visitorData))
+        {
+            request.Headers.TryAddWithoutValidation("X-Goog-Visitor-Id", visitorData);
+        }
+
+        return request;
     }
 
     private static bool TrySelectAudioUrlFromFormats(JsonElement streamingData, string propertyName, out string audioUrl)
@@ -607,16 +702,23 @@ public static partial class Exports
         var cipherUrl = GetQueryParameter(cipher, "url");
         var signature = GetQueryParameter(cipher, "sig");
         var signatureParameter = GetQueryParameter(cipher, "sp");
+        var encryptedSignature = GetQueryParameter(cipher, "s");
 
         if (string.IsNullOrWhiteSpace(cipherUrl))
         {
             return null;
         }
 
-        if (!string.IsNullOrWhiteSpace(signature) && !string.IsNullOrWhiteSpace(signatureParameter))
+        if (!string.IsNullOrWhiteSpace(encryptedSignature))
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(signature))
         {
             var separator = cipherUrl.Contains('?') ? "&" : "?";
-            return $"{cipherUrl}{separator}{Uri.EscapeDataString(signatureParameter)}={Uri.EscapeDataString(signature)}";
+            var parameterName = string.IsNullOrWhiteSpace(signatureParameter) ? "signature" : signatureParameter;
+            return $"{cipherUrl}{separator}{Uri.EscapeDataString(parameterName)}={Uri.EscapeDataString(signature)}";
         }
 
         return cipherUrl;
@@ -626,12 +728,12 @@ public static partial class Exports
     {
         var visitorJson = string.IsNullOrWhiteSpace(visitorData)
             ? string.Empty
-            : ",\"visitorData\":\"" + visitorData + "\"";
+            : ",\"visitorData\":\"" + EscapeJsonString(visitorData) + "\"";
 
         return
-            "{\"videoId\":\"" + videoId +
-            "\",\"contentCheckOk\":true,\"racyCheckOk\":true,\"context\":{\"client\":{\"clientName\":\"" + clientProfile.ClientName +
-            "\",\"clientVersion\":\"" + clientProfile.Version +
+            "{\"videoId\":\"" + EscapeJsonString(videoId) +
+            "\",\"contentCheckOk\":true,\"racyCheckOk\":true,\"context\":{\"client\":{\"clientName\":\"" + EscapeJsonString(clientProfile.ClientName) +
+            "\",\"clientVersion\":\"" + EscapeJsonString(clientProfile.Version) +
             "\",\"hl\":\"en\",\"gl\":\"US\",\"platform\":\"MOBILE\",\"osName\":\"Android\",\"osVersion\":\"13\",\"androidSdkVersion\":33" +
             visitorJson +
             "}}}";
@@ -641,14 +743,33 @@ public static partial class Exports
     {
         var visitorJson = string.IsNullOrWhiteSpace(visitorData)
             ? string.Empty
-            : ",\"visitorData\":\"" + visitorData + "\"";
+            : ",\"visitorData\":\"" + EscapeJsonString(visitorData) + "\"";
 
         return
             "{\"context\":{\"client\":{\"clientName\":\"WEB\"" +
-            ",\"clientVersion\":\"" + clientVersion +
+            ",\"clientVersion\":\"" + EscapeJsonString(clientVersion) +
             "\",\"hl\":\"en\",\"gl\":\"US\"" +
             visitorJson +
-            "}},\"continuation\":\"" + continuationToken + "\"}";
+            "}},\"continuation\":\"" + EscapeJsonString(continuationToken) + "\"}";
+    }
+
+    private static string BuildBrowsePlaylistRequestBody(string playlistId, string clientVersion, string? visitorData)
+    {
+        var visitorJson = string.IsNullOrWhiteSpace(visitorData)
+            ? string.Empty
+            : ",\"visitorData\":\"" + EscapeJsonString(visitorData) + "\"";
+
+        return
+            "{\"context\":{\"client\":{\"clientName\":\"WEB\"" +
+            ",\"clientVersion\":\"" + EscapeJsonString(clientVersion) +
+            "\",\"hl\":\"en\",\"gl\":\"US\"" +
+            visitorJson +
+            "}},\"browseId\":\"VL" + EscapeJsonString(playlistId) + "\"}";
+    }
+
+    private static string EscapeJsonString(string value)
+    {
+        return JsonEncodedText.Encode(value).ToString();
     }
 
     private static string BuildPlaylistPayload(PlaylistResult playlist)
@@ -695,7 +816,7 @@ public static partial class Exports
         }
 
         var trimmed = input.Trim();
-        if (trimmed.Length == 11 && Regex.IsMatch(trimmed, "^[A-Za-z0-9_-]{11}$"))
+        if (IsValidVideoId(trimmed))
         {
             return trimmed;
         }
@@ -705,19 +826,19 @@ public static partial class Exports
             return null;
         }
 
-        var host = uri.Host.ToLowerInvariant();
-        if (host.EndsWith("youtu.be", StringComparison.Ordinal))
+        var host = uri.IdnHost;
+        if (host.Equals("youtu.be", StringComparison.OrdinalIgnoreCase))
         {
             var path = uri.AbsolutePath.Trim('/');
-            return string.IsNullOrWhiteSpace(path) ? null : path.Split('/')[0];
+            return NormalizeVideoId(path.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault());
         }
 
-        if (!host.Contains("youtube.com", StringComparison.Ordinal))
+        if (!IsYouTubeHost(host))
         {
             return null;
         }
 
-        var directVideoId = GetQueryParameter(uri.Query.TrimStart('?'), "v");
+        var directVideoId = NormalizeVideoId(GetQueryParameter(uri.Query.TrimStart('?'), "v"));
         if (!string.IsNullOrWhiteSpace(directVideoId))
         {
             return directVideoId;
@@ -728,7 +849,7 @@ public static partial class Exports
                                      segments[0].Equals("live", StringComparison.OrdinalIgnoreCase) ||
                                      segments[0].Equals("embed", StringComparison.OrdinalIgnoreCase)))
         {
-            return segments[1];
+            return NormalizeVideoId(segments[1]);
         }
 
         return null;
@@ -742,7 +863,7 @@ public static partial class Exports
         }
 
         var trimmed = input.Trim();
-        if (!trimmed.Contains("://", StringComparison.Ordinal) && trimmed.Length >= 10)
+        if (!trimmed.Contains("://", StringComparison.Ordinal) && IsValidPlaylistId(trimmed))
         {
             return trimmed;
         }
@@ -752,7 +873,34 @@ public static partial class Exports
             return null;
         }
 
-        return GetQueryParameter(uri.Query.TrimStart('?'), "list");
+        if (!IsYouTubeHost(uri.IdnHost) && !uri.IdnHost.Equals("youtu.be", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var playlistId = GetQueryParameter(uri.Query.TrimStart('?'), "list");
+        return IsValidPlaylistId(playlistId) ? playlistId : null;
+    }
+
+    private static bool IsYouTubeHost(string host)
+    {
+        return host.Equals("youtube.com", StringComparison.OrdinalIgnoreCase) ||
+               host.EndsWith(".youtube.com", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? NormalizeVideoId(string? candidate)
+    {
+        return IsValidVideoId(candidate) ? candidate : null;
+    }
+
+    private static bool IsValidVideoId(string? candidate)
+    {
+        return !string.IsNullOrWhiteSpace(candidate) && VideoIdRegex.IsMatch(candidate);
+    }
+
+    private static bool IsValidPlaylistId(string? candidate)
+    {
+        return !string.IsNullOrWhiteSpace(candidate) && PlaylistIdRegex.IsMatch(candidate);
     }
 
     private static string? GetQueryParameter(string query, string key)
@@ -930,8 +1078,50 @@ public static partial class Exports
             if (element.TryGetProperty("playlistPanelVideoRenderer", out var playlistPanelRenderer))
             {
                 TryAddPlaylistItem(items, seenVideoIds, playlistPanelRenderer, playlistId);
+                return;
+            }
+
+            if (element.TryGetProperty("lockupViewModel", out var lockupViewModel))
+            {
+                TryAddLockupPlaylistItem(items, seenVideoIds, lockupViewModel, playlistId);
             }
         });
+    }
+
+    private static void TryAddLockupPlaylistItem(
+        List<PlaylistItem> items,
+        HashSet<string> seenVideoIds,
+        JsonElement lockup,
+        string playlistId)
+    {
+        if (!lockup.TryGetProperty("contentId", out var contentIdElement))
+        {
+            return;
+        }
+
+        var videoId = contentIdElement.GetString();
+        if (videoId is null || !IsValidVideoId(videoId) || !seenVideoIds.Add(videoId))
+        {
+            return;
+        }
+
+        string? title = null;
+        if (lockup.TryGetProperty("metadata", out var metadata) &&
+            metadata.TryGetProperty("lockupMetadataViewModel", out var metadataViewModel) &&
+            metadataViewModel.TryGetProperty("title", out var titleObject) &&
+            titleObject.TryGetProperty("content", out var titleContent))
+        {
+            title = titleContent.GetString();
+        }
+
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            title = videoId;
+        }
+
+        items.Add(new PlaylistItem(
+            $"https://www.youtube.com/watch?v={Uri.EscapeDataString(videoId)}&list={Uri.EscapeDataString(playlistId)}",
+            title));
     }
 
     private static void TryAddPlaylistItem(List<PlaylistItem> items, HashSet<string> seenVideoIds, JsonElement renderer, string playlistId)
@@ -942,7 +1132,7 @@ public static partial class Exports
         }
 
         var videoId = videoIdElement.GetString();
-        if (string.IsNullOrWhiteSpace(videoId) || !seenVideoIds.Add(videoId))
+        if (videoId is null || !IsValidVideoId(videoId) || !seenVideoIds.Add(videoId))
         {
             return;
         }
@@ -1127,28 +1317,14 @@ public static partial class Exports
 
     private static WatchPageContext? GetCachedWatchPageContext()
     {
-        lock (WatchContextCacheLock)
-        {
-            if (DateTimeOffset.UtcNow >= CachedWatchContextUntilUtc || string.IsNullOrWhiteSpace(CachedInnertubeApiKey))
-            {
-                CachedInnertubeApiKey = null;
-                CachedVisitorData = null;
-                CachedWatchContextUntilUtc = DateTimeOffset.MinValue;
-                return null;
-            }
-
-            return new WatchPageContext(CachedInnertubeApiKey, CachedVisitorData);
-        }
+        return WatchContextCache.TryGet("current", out var context) && !string.IsNullOrWhiteSpace(context?.ApiKey)
+            ? context
+            : null;
     }
 
     private static void CacheWatchPageContext(WatchPageContext watchPageContext)
     {
-        lock (WatchContextCacheLock)
-        {
-            CachedInnertubeApiKey = watchPageContext.ApiKey;
-            CachedVisitorData = watchPageContext.VisitorData;
-            CachedWatchContextUntilUtc = DateTimeOffset.UtcNow.Add(WatchContextCacheTtl);
-        }
+        WatchContextCache.Set("current", watchPageContext);
     }
 
     private static async Task<WatchPageContext?> FetchWatchPageContextAsync(string videoId, CancellationToken cancellationToken)
@@ -1224,175 +1400,31 @@ public static partial class Exports
 
     private static string? TryGetCachedStreamUrl(string input)
     {
-        lock (StreamCacheLock)
-        {
-            PruneExpiredStreamCacheEntriesLocked();
-
-            if (!StreamCache.TryGetValue(input, out var entry))
-            {
-                return null;
-            }
-
-            if (string.IsNullOrWhiteSpace(entry.StreamUrl))
-            {
-                StreamCache.Remove(input);
-                return null;
-            }
-
-            return entry.StreamUrl;
-        }
+        return StreamCache.TryGet(input, out var streamUrl) && !string.IsNullOrWhiteSpace(streamUrl)
+            ? streamUrl
+            : null;
     }
 
     private static string? TryGetCachedTitle(string videoId)
     {
-        lock (TitleCacheLock)
-        {
-            PruneExpiredTitleCacheEntriesLocked();
-
-            if (!TitleCache.TryGetValue(videoId, out var entry))
-            {
-                return null;
-            }
-
-            if (string.IsNullOrWhiteSpace(entry.Title))
-            {
-                TitleCache.Remove(videoId);
-                return null;
-            }
-
-            return entry.Title;
-        }
+        return TitleCache.TryGet(videoId, out var title) && !string.IsNullOrWhiteSpace(title)
+            ? title
+            : null;
     }
 
     private static void RememberStreamUrl(string input, string streamUrl)
     {
-        lock (StreamCacheLock)
-        {
-            PruneExpiredStreamCacheEntriesLocked();
-            StreamCache[input] = new StreamCacheEntry(streamUrl, DateTimeOffset.UtcNow.Add(StreamCacheTtl));
-
-            if (StreamCache.Count <= MaxStreamCacheEntries)
-            {
-                return;
-            }
-
-            string? oldestKey = null;
-            var oldestExpiry = DateTimeOffset.MaxValue;
-            foreach (var pair in StreamCache)
-            {
-                if (pair.Value.ExpiresUtc >= oldestExpiry)
-                {
-                    continue;
-                }
-
-                oldestKey = pair.Key;
-                oldestExpiry = pair.Value.ExpiresUtc;
-            }
-
-            if (!string.IsNullOrWhiteSpace(oldestKey))
-            {
-                StreamCache.Remove(oldestKey);
-            }
-        }
+        StreamCache.Set(input, streamUrl);
     }
 
     private static void RememberTitle(string videoId, string title)
     {
-        lock (TitleCacheLock)
-        {
-            PruneExpiredTitleCacheEntriesLocked();
-            TitleCache[videoId] = new TitleCacheEntry(title, DateTimeOffset.UtcNow.Add(TitleCacheTtl));
-
-            if (TitleCache.Count <= MaxTitleCacheEntries)
-            {
-                return;
-            }
-
-            string? oldestKey = null;
-            var oldestExpiry = DateTimeOffset.MaxValue;
-            foreach (var pair in TitleCache)
-            {
-                if (pair.Value.ExpiresUtc >= oldestExpiry)
-                {
-                    continue;
-                }
-
-                oldestKey = pair.Key;
-                oldestExpiry = pair.Value.ExpiresUtc;
-            }
-
-            if (!string.IsNullOrWhiteSpace(oldestKey))
-            {
-                TitleCache.Remove(oldestKey);
-            }
-        }
+        TitleCache.Set(videoId, title);
     }
 
-    private static void PruneExpiredStreamCacheEntriesLocked()
+    private static unsafe string PtrToUtf8(byte* value)
     {
-        if (StreamCache.Count == 0)
-        {
-            return;
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        List<string>? expiredKeys = null;
-        foreach (var pair in StreamCache)
-        {
-            if (pair.Value.ExpiresUtc > now)
-            {
-                continue;
-            }
-
-            expiredKeys ??= [];
-            expiredKeys.Add(pair.Key);
-        }
-
-        if (expiredKeys is null)
-        {
-            return;
-        }
-
-        foreach (var key in expiredKeys)
-        {
-            StreamCache.Remove(key);
-        }
-    }
-
-    private static void PruneExpiredTitleCacheEntriesLocked()
-    {
-        if (TitleCache.Count == 0)
-        {
-            return;
-        }
-
-        var now = DateTimeOffset.UtcNow;
-        List<string>? expiredKeys = null;
-        foreach (var pair in TitleCache)
-        {
-            if (pair.Value.ExpiresUtc > now)
-            {
-                continue;
-            }
-
-            expiredKeys ??= [];
-            expiredKeys.Add(pair.Key);
-        }
-
-        if (expiredKeys is null)
-        {
-            return;
-        }
-
-        foreach (var key in expiredKeys)
-        {
-            TitleCache.Remove(key);
-        }
-    }
-
-    private static unsafe string PtrToAnsi(byte* value)
-    {
-        return value == null ? string.Empty : Marshal.PtrToStringAnsi((nint)value) ?? string.Empty;
+        return value == null ? string.Empty : Marshal.PtrToStringUTF8((nint)value) ?? string.Empty;
     }
 
     private static string Sanitize(string value)
@@ -1410,7 +1442,23 @@ public static partial class Exports
 
     private static unsafe void WriteUtf8Output(byte* output, int outputSize, string value)
     {
-        WriteBytesOutput(output, outputSize, Encoding.UTF8.GetBytes(value));
+        _ = TryWriteUtf8Output(output, outputSize, value);
+    }
+
+    private static unsafe bool TryWriteUtf8Output(byte* output, int outputSize, string value)
+    {
+        return TryWriteBytesOutput(output, outputSize, Encoding.UTF8.GetBytes(value));
+    }
+
+    private static unsafe int WriteSuccessOutput(byte* output, int outputSize, string value)
+    {
+        if (TryWriteUtf8Output(output, outputSize, value))
+        {
+            return 0;
+        }
+
+        WriteUtf8Output(output, outputSize, "err|output_too_small");
+        return 3;
     }
 
     private static string DecodeXorString(byte key, params byte[] bytes)
@@ -1424,11 +1472,11 @@ public static partial class Exports
         return new string(chars);
     }
 
-    private static unsafe void WriteBytesOutput(byte* output, int outputSize, byte[] bytes)
+    private static unsafe bool TryWriteBytesOutput(byte* output, int outputSize, byte[] bytes)
     {
         if (output == null || outputSize <= 0)
         {
-            return;
+            return false;
         }
 
         var length = Math.Min(bytes.Length, outputSize - 1);
@@ -1438,13 +1486,15 @@ public static partial class Exports
         }
 
         output[length] = 0;
+        return length == bytes.Length;
     }
 
     private sealed record YoutubeClientProfile(string ClientName, string HeaderName, string Version, string UserAgent);
     private sealed record PlaylistPageContext(string InitialDataJson, string? ApiKey, string? VisitorData, string? ClientVersion);
     private sealed record WatchPageContext(string ApiKey, string? VisitorData);
-    private sealed record StreamCacheEntry(string StreamUrl, DateTimeOffset ExpiresUtc);
-    private sealed record TitleCacheEntry(string Title, DateTimeOffset ExpiresUtc);
     private sealed record PlaylistItem(string Url, string Title);
     private sealed record PlaylistResult(string Title, List<PlaylistItem> Items);
+    private sealed class YoutubeLoginRequiredException : Exception
+    {
+    }
 }

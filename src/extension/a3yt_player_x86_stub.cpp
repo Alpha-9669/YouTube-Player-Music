@@ -1,11 +1,5 @@
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
+#include "extension_common.hpp"
 
-#include <windows.h>
-
-#include <algorithm>
-#include <cctype>
-#include <cstring>
 #include <string>
 #include <vector>
 
@@ -20,62 +14,13 @@ namespace {
 constexpr char kVersion[] = "A3YTPlayer 0.7.0 x86-compat";
 constexpr char kUnsupported[] = "err|unsupported|x86_client_not_supported_use_x64";
 
-void WriteOutput(char* output, int outputSize, const std::string& value) {
-    if (output == nullptr || outputSize <= 0) {
-        return;
-    }
-
-    const int maxChars = outputSize - 1;
-    const int copyLength = static_cast<int>(std::min<std::size_t>(value.size(), static_cast<std::size_t>(maxChars)));
-    if (copyLength > 0) {
-        std::memcpy(output, value.data(), static_cast<std::size_t>(copyLength));
-    }
-
-    output[copyLength] = '\0';
-}
-
-std::string Sanitize(std::string value) {
-    for (char& ch : value) {
-        if (ch == '\r' || ch == '\n' || ch == '|') {
-            ch = ' ';
-        }
-    }
-
-    return value;
-}
-
-std::string ToLowerAscii(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return value;
-}
-
-std::vector<std::string> SplitCommand(const std::string& value) {
-    std::vector<std::string> parts;
-    std::size_t offset = 0;
-
-    while (offset <= value.size()) {
-        const std::size_t next = value.find('|', offset);
-        if (next == std::string::npos) {
-            parts.push_back(value.substr(offset));
-            break;
-        }
-
-        parts.push_back(value.substr(offset, next - offset));
-        offset = next + 1;
-    }
-
-    return parts;
-}
-
 std::string HandleCommand(const std::string& rawCommand) {
     if (rawCommand.empty()) {
         return "err|missing_argument|command";
     }
 
-    const std::vector<std::string> parts = SplitCommand(rawCommand);
-    const std::string command = ToLowerAscii(parts.empty() ? std::string{} : parts.front());
+    const std::vector<std::string> parts = a3yt::Split(rawCommand, '|');
+    const std::string command = a3yt::ToLowerAscii(parts.empty() ? std::string{} : parts.front());
 
     if (command == "version") {
         return std::string("ok|version|") + kVersion;
@@ -110,7 +55,7 @@ std::string HandleCommand(const std::string& rawCommand) {
     }
 
     if (command == "title") {
-        const std::string title = parts.size() > 1 ? Sanitize(parts[1]) : std::string{};
+        const std::string title = parts.size() > 1 ? a3yt::SanitizeProtocolField(parts[1]) : std::string{};
         return "ok|title|" + title;
     }
 
@@ -122,7 +67,7 @@ std::string HandleCommand(const std::string& rawCommand) {
         return kUnsupported;
     }
 
-    return "err|unknown_command|" + Sanitize(command);
+    return "err|unknown_command|" + a3yt::SanitizeProtocolField(command);
 }
 
 std::string HandleArgs(const std::string& function, const char** args, int argCount) {
@@ -142,16 +87,25 @@ std::string HandleArgs(const std::string& function, const char** args, int argCo
 extern "C" {
 
 __declspec(dllexport) void __stdcall RVExtensionVersion(char* output, int outputSize) {
-    WriteOutput(output, outputSize, kVersion);
+    a3yt::WriteOutput(output, outputSize, kVersion);
 }
 
 __declspec(dllexport) void __stdcall RVExtension(char* output, int outputSize, const char* function) {
-    WriteOutput(output, outputSize, HandleCommand(function != nullptr ? function : ""));
+    try {
+        a3yt::WriteOutput(output, outputSize, HandleCommand(function != nullptr ? function : ""));
+    } catch (...) {
+        a3yt::WriteOutput(output, outputSize, "err|internal|exception");
+    }
 }
 
 __declspec(dllexport) int __stdcall RVExtensionArgs(char* output, int outputSize, const char* function, const char** args, int argCount) {
-    WriteOutput(output, outputSize, HandleArgs(function != nullptr ? function : "", args, argCount));
-    return 0;
+    try {
+        a3yt::WriteOutput(output, outputSize, HandleArgs(function != nullptr ? function : "", args, argCount));
+        return 0;
+    } catch (...) {
+        a3yt::WriteOutput(output, outputSize, "err|internal|exception");
+        return 4;
+    }
 }
 
 }  // extern "C"
