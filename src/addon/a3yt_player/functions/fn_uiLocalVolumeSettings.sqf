@@ -26,6 +26,9 @@ private _fnc_readVolume = {
 private _fnc_updatePreview = {
     private _localVolume = call _fnc_readVolume;
     private _sourceVolume = missionNamespace getVariable ["A3YT_localQueueVolume", 70];
+    if !(_sourceVolume isEqualType 0) then {
+        _sourceVolume = 70;
+    };
     private _effectiveVolume = if (cbChecked _overrideCtrl) then {
         _localVolume
     } else {
@@ -37,8 +40,12 @@ private _fnc_updatePreview = {
 
 switch (toLower _mode) do {
     case "onload": {
-        _volumeCtrl ctrlSetText str (missionNamespace getVariable ["A3YT_localVolume", 100]);
-        _overrideCtrl cbSetChecked (missionNamespace getVariable ["A3YT_localVolumeOverride", false]);
+        private _localVolume = missionNamespace getVariable ["A3YT_localVolume", 100];
+        private _override = missionNamespace getVariable ["A3YT_localVolumeOverride", false];
+        if !(_localVolume isEqualType 0) then {_localVolume = 100;};
+        if !(_override isEqualType true) then {_override = false;};
+        _volumeCtrl ctrlSetText str _localVolume;
+        _overrideCtrl cbSetChecked _override;
 
         _volumeCtrl ctrlAddEventHandler ["KeyUp", {
             ["preview", ctrlParent (_this select 0)] call A3YT_fnc_uiLocalVolumeSettings;

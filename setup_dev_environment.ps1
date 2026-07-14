@@ -88,26 +88,8 @@ function Remove-PathQuietly {
     }
 }
 
-function Remove-LegacySetupTempFiles {
-    $tempRoot = $null
-    try {
-        $tempRoot = [System.IO.Path]::GetTempPath()
-    } catch {
-        $tempRoot = $env:TEMP
-    }
-
-    if ([string]::IsNullOrWhiteSpace($tempRoot)) {
-        return
-    }
-
-    foreach ($fileName in @("dotnet-install.ps1", "vs_BuildTools.exe")) {
-        Remove-PathQuietly -Path (Join-Path $tempRoot $fileName)
-    }
-}
-
 function Remove-SetupTempFiles {
     Remove-PathQuietly -Path $setupRunTempRoot
-    Remove-LegacySetupTempFiles
 
     try {
         if ((Test-Path -LiteralPath $setupTempRoot -ErrorAction SilentlyContinue) -and

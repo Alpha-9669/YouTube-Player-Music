@@ -799,10 +799,11 @@ public static partial class Exports
         var handler = new HttpClientHandler
         {
             AutomaticDecompression = DecompressionMethods.All,
+            CheckCertificateRevocationList = true,
             UseCookies = false
         };
 
-        return new HttpClient(handler)
+        return new HttpClient(handler, disposeHandler: true)
         {
             Timeout = TimeSpan.FromSeconds(20)
         };

@@ -3,6 +3,9 @@ if (!hasInterface) exitWith {
 };
 
 private _sourceVolume = missionNamespace getVariable ["A3YT_localQueueVolume", -1];
+if !(_sourceVolume isEqualType 0) then {
+    _sourceVolume = -1;
+};
 if (_sourceVolume < 0) exitWith {
     ""
 };

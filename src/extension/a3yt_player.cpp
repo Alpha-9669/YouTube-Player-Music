@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -63,6 +64,7 @@ enum class PlaybackStage {
     Resolving,
     Playing,
     Paused,
+    Ended,
     Error,
 };
 
@@ -83,6 +85,7 @@ int g_commandVolume = 70;
 std::atomic<int> g_pendingVolume{-1};
 std::uint64_t g_prefetchSerial = 0;
 bool g_prefetchRunning = false;
+bool g_prefetchWorkerActive = false;
 std::string g_prefetchUrl;
 std::wstring g_prefetchResolvedUrl;
 std::string g_prefetchError;
@@ -180,13 +183,13 @@ std::string Sanitize(const std::string& value) {
 }
 
 std::filesystem::path GetDebugLogPath() {
-    wchar_t* localAppData = nullptr;
+    wchar_t* localAppDataRaw = nullptr;
     std::size_t required = 0;
-    _wdupenv_s(&localAppData, &required, L"LOCALAPPDATA");
+    _wdupenv_s(&localAppDataRaw, &required, L"LOCALAPPDATA");
+    const std::unique_ptr<wchar_t, decltype(&std::free)> localAppData(localAppDataRaw, &std::free);
     std::filesystem::path path;
     if (localAppData != nullptr && required > 0) {
-        path = std::filesystem::path(localAppData) / L"Arma 3" / L"A3YT_extension.log";
-        free(localAppData);
+        path = std::filesystem::path(localAppData.get()) / L"Arma 3" / L"A3YT_extension.log";
     } else {
         path = std::filesystem::temp_directory_path() / L"A3YT_extension.log";
     }
@@ -337,6 +340,8 @@ std::string GetStageName(PlaybackStage stage) {
             return "playing";
         case PlaybackStage::Paused:
             return "paused";
+        case PlaybackStage::Ended:
+            return "ended";
         case PlaybackStage::Error:
             return "error";
     }
@@ -1080,24 +1085,61 @@ bool TryUsePrefetchedResolve(const std::string& input, std::wstring* mediaUrl) {
     return true;
 }
 
-void PrefetchWorker(std::uint64_t serial, std::string url) {
-    DebugLog("prefetch|begin|serial=" + std::to_string(serial) + "|url=" + Sanitize(url));
-    std::wstring resolvedUrl;
-    std::string errorMessage;
-    const bool resolved = ResolveAudioStream(url, &resolvedUrl, &errorMessage);
+void PrefetchWorker() {
+    for (;;) {
+        std::uint64_t serial = 0;
+        std::string url;
+        {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            if (g_shutdownRequested || !g_prefetchRunning || g_prefetchUrl.empty()) {
+                g_prefetchWorkerActive = false;
+                g_prefetchCv.notify_all();
+                return;
+            }
 
-    std::lock_guard<std::mutex> lock(g_mutex);
-    if (serial != g_prefetchSerial || url != g_prefetchUrl) {
+            serial = g_prefetchSerial;
+            url = g_prefetchUrl;
+        }
+
+        DebugLog("prefetch|begin|serial=" + std::to_string(serial) + "|url=" + Sanitize(url));
+        std::wstring resolvedUrl;
+        std::string errorMessage;
+        const bool resolved = ResolveAudioStream(url, &resolvedUrl, &errorMessage);
+
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (serial != g_prefetchSerial || url != g_prefetchUrl) {
+            DebugLog("prefetch|superseded|serial=" + std::to_string(serial));
+            g_prefetchCv.notify_all();
+            continue;
+        }
+
+        g_prefetchRunning = false;
+        g_prefetchWorkerActive = false;
+        g_prefetchResolvedUrl = resolved ? std::move(resolvedUrl) : std::wstring();
+        g_prefetchError = resolved ? std::string() : Sanitize(errorMessage);
         g_prefetchCv.notify_all();
+        DebugLog(std::string("prefetch|") + (resolved ? "ok" : "fail") + "|serial=" + std::to_string(serial) +
+                 (resolved ? std::string() : "|error=" + g_prefetchError));
         return;
     }
+}
 
-    g_prefetchRunning = false;
-    g_prefetchResolvedUrl = resolved ? std::move(resolvedUrl) : std::wstring();
-    g_prefetchError = resolved ? std::string() : Sanitize(errorMessage);
-    g_prefetchCv.notify_all();
-    DebugLog(std::string("prefetch|") + (resolved ? "ok" : "fail") + "|serial=" + std::to_string(serial) +
-             (resolved ? std::string() : "|error=" + g_prefetchError));
+void PrefetchWorkerNoexcept() noexcept {
+    try {
+        PrefetchWorker();
+    } catch (...) {
+        try {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            g_prefetchRunning = false;
+            g_prefetchWorkerActive = false;
+            g_prefetchResolvedUrl.clear();
+            g_prefetchError = "prefetch|worker_exception";
+            g_prefetchCv.notify_all();
+        } catch (...) {
+            DebugLog("prefetch|state_reset_failed");
+        }
+        DebugLog("prefetch|worker_exception");
+    }
 }
 
 void StartPrefetchLocked(const std::string& url) {
@@ -1119,21 +1161,40 @@ void StartPrefetchLocked(const std::string& url) {
     g_prefetchResolvedUrl.clear();
     g_prefetchError.clear();
 
-    const std::uint64_t serial = g_prefetchSerial;
-    std::thread([serial, url]() {
-        PrefetchWorker(serial, url);
-    }).detach();
+    if (!g_prefetchWorkerActive) {
+        g_prefetchWorkerActive = true;
+        try {
+            std::thread(PrefetchWorkerNoexcept).detach();
+        } catch (...) {
+            g_prefetchWorkerActive = false;
+            g_prefetchRunning = false;
+            g_prefetchError = "prefetch|thread_start_failed";
+            g_prefetchCv.notify_all();
+            throw;
+        }
+    }
 }
 
-void WarmupBackendAsync() {
-    DebugLog("warmup|begin");
-    std::vector<char> buffer(512, '\0');
-    const int warmupStatus = YPM2(buffer.data(), static_cast<int>(buffer.size()));
-    DebugLog("warmup|" + std::string(warmupStatus == 0 ? "ok" : "fail") + "|payload=" + Sanitize(buffer.data()));
+void WarmupBackendAsync() noexcept {
+    try {
+        DebugLog("warmup|begin");
+        std::vector<char> buffer(512, '\0');
+        const int warmupStatus = YPM2(buffer.data(), static_cast<int>(buffer.size()));
+        DebugLog("warmup|" + std::string(warmupStatus == 0 ? "ok" : "fail") + "|payload=" + Sanitize(buffer.data()));
 
-    std::lock_guard<std::mutex> lock(g_mutex);
-    g_warmupRequested = false;
-    g_warmupCompleted = warmupStatus == 0;
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_warmupRequested = false;
+        g_warmupCompleted = warmupStatus == 0;
+    } catch (...) {
+        try {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            g_warmupRequested = false;
+            g_warmupCompleted = false;
+        } catch (...) {
+            DebugLog("warmup|state_reset_failed");
+        }
+        DebugLog("warmup|worker_exception");
+    }
 }
 
 bool SetPlayerVolume(PlayerHandle* player, int volume, std::string* errorMessage = nullptr) {
@@ -1751,14 +1812,15 @@ bool ApplyPendingSeekIfNeeded(
     return RestartPlayerAtPosition(player, callback, mediaUrl, volume, requestedMs, serial, paused);
 }
 
-void WorkerMain() {
+void WorkerMain() noexcept {
     PlayerHandle* player = nullptr;
     PlayerCallback* callback = nullptr;
     std::uint64_t handledSerial = 0;
     int activeVolume = 70;
 
-    std::unique_lock<std::mutex> lock(g_mutex);
-    while (!g_shutdownRequested) {
+    try {
+        std::unique_lock<std::mutex> lock(g_mutex);
+        while (!g_shutdownRequested) {
         g_commandCv.wait(lock, [&]() { return g_shutdownRequested || g_commandSerial != handledSerial; });
         if (g_shutdownRequested) {
             break;
@@ -1952,18 +2014,36 @@ void WorkerMain() {
         }
 
         if (!interrupted && !failed) {
-            SetStateIfCurrent(handledSerial, PlaybackStage::Idle, "");
+            SetStateIfCurrent(handledSerial, PlaybackStage::Ended, "");
         }
 
         lock.lock();
     }
 
-    lock.unlock();
-    StopAndReleasePlayer(player);
-    if (callback != nullptr) {
-        callback->Release();
+        lock.unlock();
+        StopAndReleasePlayer(player);
+        if (callback != nullptr) {
+            callback->Release();
+            callback = nullptr;
+        }
+        ShutdownPlaybackBackendThread();
+    } catch (...) {
+        StopAndReleasePlayer(player);
+        if (callback != nullptr) {
+            callback->Release();
+            callback = nullptr;
+        }
+        ShutdownPlaybackBackendThread();
+        try {
+            std::lock_guard<std::mutex> lock(g_mutex);
+            g_workerStarted = false;
+            g_stage = PlaybackStage::Error;
+            g_lastError = "worker|exception";
+        } catch (...) {
+            DebugLog("worker|state_reset_failed");
+        }
+        DebugLog("worker|exception");
     }
-    ShutdownPlaybackBackendThread();
 }
 
 void EnsureWorkerStartedLocked() {
@@ -2181,7 +2261,13 @@ std::pair<std::string, int> HandleCommand(const std::string& command, const std:
         }
 
         if (shouldStartWarmup) {
-            std::thread(WarmupBackendAsync).detach();
+            try {
+                std::thread(WarmupBackendAsync).detach();
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(g_mutex);
+                g_warmupRequested = false;
+                throw;
+            }
         }
 
         DebugLog(std::string("command|warmup|") + (shouldStartWarmup ? "started" : "ready"));

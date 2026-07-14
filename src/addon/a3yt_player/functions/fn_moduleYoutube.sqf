@@ -53,6 +53,39 @@ if (!_hasDirectDispatch && {isNull _logic}) exitWith {
 
 if (!_activated) exitWith {};
 
+// Direct queue controls are authoritative on the server.  Reject remote
+// control commands from clients that do not currently own a curator logic.
+// Progress reports remain accepted from playback clients and are guarded by
+// the queue generation/monotonic consumed counter below.
+private _authorizedDispatch = true;
+private _dispatchOwner = if (!isNil "remoteExecutedOwner" && {remoteExecutedOwner > 0}) then {remoteExecutedOwner} else {clientOwner};
+if (_hasDirectDispatch && {isServer} && {_directAction isNotEqualTo "progress"} && {!isNil "remoteExecutedOwner"} && {remoteExecutedOwner > 2}) then {
+    private _requestOwner = remoteExecutedOwner;
+    private _requestPlayer = objNull;
+    {
+        if ((owner _x) isEqualTo _requestOwner) exitWith {
+            _requestPlayer = _x;
+        };
+    } forEach allPlayers;
+
+    _authorizedDispatch = !isNull _requestPlayer && {!isNull (getAssignedCuratorLogic _requestPlayer)};
+};
+
+if (_hasDirectDispatch && {isServer} && {_directAction isEqualTo "progress"}) then {
+    private _controllerOwner = missionNamespace getVariable ["A3YT_queueControllerOwner", -1];
+    if (_controllerOwner >= 0 && {_dispatchOwner isNotEqualTo _controllerOwner}) then {
+        _authorizedDispatch = false;
+    };
+};
+
+if (!_authorizedDispatch) exitWith {
+    diag_log format ["[A3YT] rejected unauthorized dispatch owner=%1 action=%2", _dispatchOwner, _directAction];
+};
+
+if (_hasDirectDispatch && {isServer} && {_directAction in ["draft", "apply"]}) then {
+    missionNamespace setVariable ["A3YT_queueControllerOwner", _dispatchOwner];
+};
+
 private _fnc_normalizeQueueItem = {
     params [["_item", [], ["", []]]];
 
@@ -64,10 +97,10 @@ private _fnc_normalizeQueueItem = {
 
     if !(_item isEqualType []) exitWith {[]};
 
-    private _url = trim (_item param [0, ""]);
+    private _url = trim (_item param [0, "", [""]]);
     if (_url isEqualTo "") exitWith {[]};
 
-    private _title = trim (_item param [1, _url]);
+    private _title = trim (_item param [1, _url, [""]]);
     if (_title isEqualTo "") then {
         _title = _url;
     };

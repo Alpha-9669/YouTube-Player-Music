@@ -10,6 +10,13 @@ private _consumePlayed = missionNamespace getVariable ["A3YT_localQueueConsumePl
 private _loopQueue = missionNamespace getVariable ["A3YT_localQueueLoop", false];
 private _baseIndex = missionNamespace getVariable ["A3YT_localQueueBaseIndex", 0];
 
+// Playback fan-out must originate from the authoritative server.  Local calls
+// (including hosted-server calls) do not expose a remote owner.
+if (!isNil "remoteExecutedOwner" && {remoteExecutedOwner > 2}) exitWith {
+    diag_log format ["[A3YT] rejected unauthorized playback command owner=%1", remoteExecutedOwner];
+    "err|unauthorized"
+};
+
 private _fnc_normalizeQueueItem = {
     params [["_item", [], ["", []]]];
 
@@ -21,10 +28,10 @@ private _fnc_normalizeQueueItem = {
 
     if !(_item isEqualType []) exitWith {[]};
 
-    private _url = trim (_item param [0, ""]);
+    private _url = trim (_item param [0, "", [""]]);
     if (_url isEqualTo "") exitWith {[]};
 
-    private _title = trim (_item param [1, _url]);
+    private _title = trim (_item param [1, _url, [""]]);
     if (_title isEqualTo "") then {
         _title = _url;
     };
@@ -316,10 +323,10 @@ missionNamespace setVariable ["A3YT_localQueueReportedConsumed", _baseIndex];
 
         if !(_item isEqualType []) exitWith {[]};
 
-        private _url = trim (_item param [0, ""]);
+        private _url = trim (_item param [0, "", [""]]);
         if (_url isEqualTo "") exitWith {[]};
 
-        private _title = trim (_item param [1, _url]);
+        private _title = trim (_item param [1, _url, [""]]);
         if (_title isEqualTo "") then {
             _title = _url;
         };
@@ -520,6 +527,13 @@ missionNamespace setVariable ["A3YT_localQueueReportedConsumed", _baseIndex];
                             _itemDone = true;
                         };
 
+                        if (!_itemDone && {_state isEqualTo "ended"}) then {
+                            _itemCompleted = true;
+                            _itemDone = true;
+                        };
+
+                        // Compatibility with older extension builds that reported a
+                        // completed item as idle after playing it.
                         if (!_itemDone && {_state isEqualTo "idle"} && {_sawPlaying}) then {
                             _itemCompleted = true;
                             _itemDone = true;
@@ -532,7 +546,6 @@ missionNamespace setVariable ["A3YT_localQueueReportedConsumed", _baseIndex];
                             };
                             diag_log format ["[A3YT] queue_timeout url=%1 status=%2", _url, _statusMessage];
                             ["stop", []] call A3YT_fnc_callExtension;
-                            _abortQueue = true;
                             _itemDone = true;
                         };
 
@@ -587,7 +600,6 @@ missionNamespace setVariable ["A3YT_localQueueReportedConsumed", _baseIndex];
                                     _statusMessage
                                 ];
                                 ["stop", []] call A3YT_fnc_callExtension;
-                                _abortQueue = true;
                                 _itemDone = true;
                             };
                         };

@@ -63,10 +63,10 @@ private _fnc_normalizeQueueItem = {
 
     if !(_item isEqualType []) exitWith {[]};
 
-    private _url = trim (_item param [0, ""]);
+    private _url = trim (_item param [0, "", [""]]);
     if (_url isEqualTo "") exitWith {[]};
 
-    private _title = trim (_item param [1, _url]);
+    private _title = trim (_item param [1, _url, [""]]);
     if (_title isEqualTo "") then {
         _title = _url;
     };

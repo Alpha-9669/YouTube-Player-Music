@@ -14,19 +14,25 @@ function Ensure-Directory {
 }
 
 Ensure-Directory $Destination
+$Destination = (Resolve-Path -LiteralPath $Destination).Path
 
 $headers = @{
     "User-Agent" = "A3YTPlayer-BuildScript"
     "Accept" = "application/vnd.github+json"
 }
 
-$ytDlpTarget = Join-Path $Destination "yt-dlp.exe"
-Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile $ytDlpTarget
-
-$zipPath = $null
-$extractDir = $null
+$downloadRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("a3yt_runtime_" + [guid]::NewGuid().ToString("N"))
+$ytDlpTemp = Join-Path $downloadRoot "yt-dlp.exe"
+$zipPath = Join-Path $downloadRoot "ffmpeg.zip"
+$extractDir = Join-Path $downloadRoot "ffmpeg"
 
 try {
+    Ensure-Directory $downloadRoot
+    Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile $ytDlpTemp -Headers $headers
+    if ((Get-Item -LiteralPath $ytDlpTemp).Length -le 0) {
+        throw "Downloaded yt-dlp.exe is empty."
+    }
+
     $release = Invoke-RestMethod -Uri "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest" -Headers $headers
     $asset = $release.assets |
         Where-Object { $_.name -like "*win64-gpl*.zip" } |
@@ -37,9 +43,6 @@ try {
         throw "Could not find a matching FFmpeg Windows asset in the latest BtbN release."
     }
 
-    $zipPath = Join-Path $env:TEMP $asset.name
-    $extractDir = Join-Path $env:TEMP ("a3yt_ffmpeg_" + [guid]::NewGuid().ToString("N"))
-
     Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -Headers $headers
     Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
 
@@ -48,14 +51,15 @@ try {
         throw "ffplay.exe not found inside downloaded FFmpeg archive."
     }
 
-    Copy-Item $ffplay.FullName (Join-Path $Destination "ffplay.exe") -Force
-} finally {
-    if ($zipPath -and (Test-Path -LiteralPath $zipPath)) {
-        Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+    if ($ffplay.Length -le 0) {
+        throw "Downloaded ffplay.exe is empty."
     }
 
-    if ($extractDir -and (Test-Path -LiteralPath $extractDir)) {
-        Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+    Move-Item -LiteralPath $ytDlpTemp -Destination (Join-Path $Destination "yt-dlp.exe") -Force
+    Copy-Item -LiteralPath $ffplay.FullName -Destination (Join-Path $Destination "ffplay.exe") -Force
+} finally {
+    if (Test-Path -LiteralPath $downloadRoot) {
+        Remove-Item -LiteralPath $downloadRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 

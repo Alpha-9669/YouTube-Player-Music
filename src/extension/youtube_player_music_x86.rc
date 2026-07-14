@@ -1,8 +1,8 @@
 #include <winver.h>
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,5,1,0
- PRODUCTVERSION 0,5,1,0
+ FILEVERSION 0,7,0,0
+ PRODUCTVERSION 0,7,0,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -19,11 +19,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Alpha"
             VALUE "FileDescription", "YouTube Player Music Arma 3 x86 Compatibility Stub"
-            VALUE "FileVersion", "0.5.1.0"
+            VALUE "FileVersion", "0.7.0.0"
             VALUE "InternalName", "youtube_player_music"
             VALUE "OriginalFilename", "youtube_player_music.dll"
             VALUE "ProductName", "YouTube Player Music"
-            VALUE "ProductVersion", "0.5.1.0"
+            VALUE "ProductVersion", "0.7.0.0"
             VALUE "LegalCopyright", "Copyright (C) Alpha"
         END
     END

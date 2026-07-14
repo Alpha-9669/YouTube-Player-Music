@@ -36,8 +36,10 @@ if (!(Test-Path (Join-Path $PSScriptRoot $extensionDll))) {
 }
 
 $extensionLog = Join-Path $env:LOCALAPPDATA "Arma 3\\A3YT_extension.log"
-if ($EnableDebug -and (Test-Path $extensionLog)) {
-    Remove-Item $extensionLog -Force -ErrorAction SilentlyContinue
+$existingLogLineCount = if ($EnableDebug -and (Test-Path $extensionLog)) {
+    @(Get-Content -LiteralPath $extensionLog).Count
+} else {
+    0
 }
 
 $existingRunnerIds = @(
@@ -103,8 +105,10 @@ try {
 
 if ($EnableDebug) {
     if (Test-Path $extensionLog) {
-        Write-Host "--- A3YT_extension.log tail ---"
-        Get-Content -Path $extensionLog -Tail $TailLogLines
+        Write-Host "--- A3YT_extension.log new lines ---"
+        Get-Content -LiteralPath $extensionLog |
+            Select-Object -Skip $existingLogLineCount |
+            Select-Object -Last $TailLogLines
     } else {
         Write-Warning "Extension log was not created: $extensionLog"
     }
