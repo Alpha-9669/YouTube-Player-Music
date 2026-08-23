@@ -157,6 +157,7 @@ function Get-VisualStudioInstallPath {
 
     $candidateRoots += @(
         "C:\\BuildTools",
+        "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools",
         "C:\\Program Files\\Microsoft Visual Studio\\2022\\BuildTools",
         "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community",
         "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional",

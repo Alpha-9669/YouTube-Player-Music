@@ -11,7 +11,7 @@
 
 namespace {
 
-constexpr char kVersion[] = "A3YTPlayer 0.7.0 x86-compat";
+constexpr char kVersion[] = "A3YTPlayer 0.7.1 x86-compat";
 constexpr char kUnsupported[] = "err|unsupported|x86_client_not_supported_use_x64";
 
 std::string HandleCommand(const std::string& rawCommand) {

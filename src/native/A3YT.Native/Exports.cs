@@ -33,8 +33,45 @@ public static partial class Exports
     private static readonly Lazy<HttpClient> Http = new(CreateHttpClient);
     private static readonly YoutubeClientProfile[] ClientProfiles =
     [
-        new("ANDROID_VR", "28", "1.60.19", "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 13; Quest 3; GB) gzip"),
-        new("ANDROID", "3", "19.44.38", "com.google.android.youtube/19.44.38 (Linux; U; Android 13; Pixel 7 Pro Build/TQ3A.230805.001) gzip")
+        // VISIONOS currently exposes signed direct audio URLs without requiring a
+        // player/GVS PO token. Keep it first and verify every URL before caching it.
+        new(
+            "VISIONOS",
+            "101",
+            "1.02",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+            DeviceMake: "Apple",
+            DeviceModel: "RealityDevice17,1",
+            OsName: "visionOS",
+            OsVersion: "26.5.23O471"),
+        new(
+            "IOS",
+            "5",
+            "21.26.4",
+            "com.google.ios.youtube/21.26.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
+            DeviceMake: "Apple",
+            DeviceModel: "iPhone16,2",
+            OsName: "iPhone",
+            OsVersion: "18.3.2.22D82"),
+        new(
+            "TVHTML5",
+            "7",
+            "7.20260707.07.00",
+            "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)"),
+        new(
+            "WEB_EMBEDDED_PLAYER",
+            "56",
+            "2.20260708.00.00",
+            "Mozilla/5.0",
+            EmbedUrl: "https://www.reddit.com/"),
+        new(
+            "ANDROID",
+            "3",
+            "21.26.364",
+            "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip",
+            OsName: "Android",
+            OsVersion: "11",
+            AndroidSdkVersion: 30)
     ];
 
     private static readonly ExpiringCache<string> StreamCache = new(MaxStreamCacheEntries, StreamCacheTtl);
@@ -278,22 +315,13 @@ public static partial class Exports
 
     private static async Task<string?> TryResolveAcrossProfilesAsync(Func<YoutubeClientProfile, Task<string?>> resolver)
     {
-        var tasks = new List<Task<string?>>(ClientProfiles.Length);
         var loginRequired = false;
         foreach (var clientProfile in ClientProfiles)
         {
-            tasks.Add(TryResolveProfileAsync(clientProfile, resolver));
-        }
-
-        while (tasks.Count > 0)
-        {
-            var completedTask = await Task.WhenAny(tasks);
-            tasks.Remove(completedTask);
-
             string? result;
             try
             {
-                result = await completedTask;
+                result = await TryResolveProfileAsync(clientProfile, resolver);
             }
             catch (YoutubeLoginRequiredException)
             {
@@ -419,7 +447,9 @@ public static partial class Exports
         ThrowIfLoginRequired(document.RootElement);
         if (TrySelectAudioUrl(document.RootElement, out var audioUrl))
         {
-            return audioUrl;
+            return await IsPlayableStreamUrlAsync(audioUrl, clientProfile.UserAgent, cancellationToken)
+                ? audioUrl
+                : null;
         }
 
         return null;
@@ -726,17 +756,46 @@ public static partial class Exports
 
     private static string BuildPlayerRequestBody(string videoId, YoutubeClientProfile clientProfile, string? visitorData)
     {
-        var visitorJson = string.IsNullOrWhiteSpace(visitorData)
-            ? string.Empty
-            : ",\"visitorData\":\"" + EscapeJsonString(visitorData) + "\"";
+        var builder = new StringBuilder(512);
+        builder.Append("{\"videoId\":\"").Append(EscapeJsonString(videoId));
+        builder.Append("\",\"contentCheckOk\":true,\"racyCheckOk\":true,\"context\":{\"client\":{");
+        builder.Append("\"clientName\":\"").Append(EscapeJsonString(clientProfile.ClientName));
+        builder.Append("\",\"clientVersion\":\"").Append(EscapeJsonString(clientProfile.Version));
+        builder.Append("\",\"hl\":\"en\",\"gl\":\"US\"");
 
-        return
-            "{\"videoId\":\"" + EscapeJsonString(videoId) +
-            "\",\"contentCheckOk\":true,\"racyCheckOk\":true,\"context\":{\"client\":{\"clientName\":\"" + EscapeJsonString(clientProfile.ClientName) +
-            "\",\"clientVersion\":\"" + EscapeJsonString(clientProfile.Version) +
-            "\",\"hl\":\"en\",\"gl\":\"US\",\"platform\":\"MOBILE\",\"osName\":\"Android\",\"osVersion\":\"13\",\"androidSdkVersion\":33" +
-            visitorJson +
-            "}}}";
+        AppendJsonStringProperty(builder, "visitorData", visitorData);
+        AppendJsonStringProperty(builder, "deviceMake", clientProfile.DeviceMake);
+        AppendJsonStringProperty(builder, "deviceModel", clientProfile.DeviceModel);
+        AppendJsonStringProperty(builder, "osName", clientProfile.OsName);
+        AppendJsonStringProperty(builder, "osVersion", clientProfile.OsVersion);
+        AppendJsonStringProperty(builder, "platform", clientProfile.Platform);
+        if (clientProfile.AndroidSdkVersion is int androidSdkVersion)
+        {
+            builder.Append(",\"androidSdkVersion\":").Append(androidSdkVersion);
+        }
+
+        builder.Append('}');
+        if (!string.IsNullOrWhiteSpace(clientProfile.EmbedUrl))
+        {
+            builder.Append(",\"thirdParty\":{\"embedUrl\":\"");
+            builder.Append(EscapeJsonString(clientProfile.EmbedUrl));
+            builder.Append("\"}");
+        }
+
+        builder.Append("}}");
+        return builder.ToString();
+    }
+
+    private static void AppendJsonStringProperty(StringBuilder builder, string propertyName, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        builder.Append(",\"").Append(propertyName).Append("\":\"");
+        builder.Append(EscapeJsonString(value));
+        builder.Append('"');
     }
 
     private static string BuildBrowseContinuationRequestBody(string continuationToken, string clientVersion, string? visitorData)
@@ -807,6 +866,26 @@ public static partial class Exports
         {
             Timeout = TimeSpan.FromSeconds(20)
         };
+    }
+
+    private static async Task<bool> IsPlayableStreamUrlAsync(
+        string streamUrl,
+        string userAgent,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, streamUrl);
+            request.Headers.TryAddWithoutValidation("Range", "bytes=0-0");
+            request.Headers.TryAddWithoutValidation("User-Agent", userAgent);
+
+            using var response = await Http.Value.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            return response.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static string? ExtractVideoId(string input)
@@ -1490,7 +1569,18 @@ public static partial class Exports
         return length == bytes.Length;
     }
 
-    private sealed record YoutubeClientProfile(string ClientName, string HeaderName, string Version, string UserAgent);
+    private sealed record YoutubeClientProfile(
+        string ClientName,
+        string HeaderName,
+        string Version,
+        string UserAgent,
+        string? DeviceMake = null,
+        string? DeviceModel = null,
+        string? OsName = null,
+        string? OsVersion = null,
+        string? Platform = null,
+        int? AndroidSdkVersion = null,
+        string? EmbedUrl = null);
     private sealed record PlaylistPageContext(string InitialDataJson, string? ApiKey, string? VisitorData, string? ClientVersion);
     private sealed record WatchPageContext(string ApiKey, string? VisitorData);
     private sealed record PlaylistItem(string Url, string Title);

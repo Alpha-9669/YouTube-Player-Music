@@ -26,7 +26,7 @@
 
 namespace {
 
-constexpr char kVersion[] = "A3YTPlayer 0.7.0";
+constexpr char kVersion[] = "A3YTPlayer 0.7.1";
 constexpr char kPlaylistMetaSeparator = '\x1D';
 constexpr char kPlaylistRecordSeparator = '\x1E';
 constexpr char kPlaylistFieldSeparator = '\x1F';
@@ -2068,9 +2068,14 @@ std::string GetStatus() {
 
 std::string GetTimeline() {
     std::lock_guard<std::mutex> lock(g_mutex);
-    return "ok|timeline|" + GetStageName(g_stage) + "|" +
-           std::to_string(g_timelinePositionMs.load()) + "|" +
-           std::to_string(g_timelineDurationMs.load());
+    std::string timeline = "ok|timeline|" + GetStageName(g_stage) + "|" +
+                           std::to_string(g_timelinePositionMs.load()) + "|" +
+                           std::to_string(g_timelineDurationMs.load());
+    if (!g_lastError.empty()) {
+        timeline += "|" + g_lastError;
+    }
+
+    return timeline;
 }
 
 std::pair<std::string, int> HandleCommand(const std::string& command, const std::vector<std::string>& args) {
