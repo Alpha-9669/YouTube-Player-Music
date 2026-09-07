@@ -447,6 +447,7 @@ missionNamespace setVariable ["A3YT_localQueueReportedConsumed", _baseIndex];
                 private _lastLoggedState = "";
                 private _lastPositionMs = -1;
                 private _lastProgressAt = diag_tickTime;
+                private _recoveryDeadline = -1;
                 private _lastRecoveredSeekAt = -1;
                 private _lastObservedSeekAt = -1;
                 private _seekRecoveryAttempts = 0;
@@ -492,6 +493,7 @@ missionNamespace setVariable ["A3YT_localQueueReportedConsumed", _baseIndex];
                             if (_positionMs > _lastPositionMs) then {
                                 _lastPositionMs = _positionMs;
                                 _lastProgressAt = diag_tickTime;
+                                _recoveryDeadline = -1;
                             };
                         };
 
@@ -516,6 +518,14 @@ missionNamespace setVariable ["A3YT_localQueueReportedConsumed", _baseIndex];
 
                         if (_state isEqualTo "paused") then {
                             _lastProgressAt = diag_tickTime;
+                            _recoveryDeadline = -1;
+                        };
+
+                        // Native recovery can prepare audio for up to 100 seconds.
+                        // Start one bounded grace period, never renew it just because
+                        // the native state still says resolving on the next poll.
+                        if (_sawPlaying && {_state isEqualTo "resolving"} && {_recoveryDeadline < 0}) then {
+                            _recoveryDeadline = diag_tickTime + 120;
                         };
 
                         if (_state isEqualTo "error") then {
@@ -567,9 +577,14 @@ missionNamespace setVariable ["A3YT_localQueueReportedConsumed", _baseIndex];
                             }
                         };
 
-                        if (!_itemDone && {_sawPlaying} && {!(_state isEqualTo "paused")} && {(diag_tickTime - _lastProgressAt) > _stallTimeout}) then {
+                        private _isStalled = if (_state isEqualTo "resolving") then {
+                            _recoveryDeadline >= 0 && {diag_tickTime > _recoveryDeadline}
+                        } else {
+                            (diag_tickTime - _lastProgressAt) > _stallTimeout
+                        };
+                        if (!_itemDone && {_sawPlaying} && {!(_state isEqualTo "paused")} && {_isStalled}) then {
                             private _longTrackRecovery = _durationMs >= 3600000 && {_positionMs >= 0};
-                            if (((_recentSeek && {_lastSeekMs >= 0}) || {_longTrackRecovery}) && {_seekRecoveryAttempts < 2}) then {
+                            if (!(_state isEqualTo "resolving") && {(_recentSeek && {_lastSeekMs >= 0}) || {_longTrackRecovery}} && {_seekRecoveryAttempts < 2}) then {
                                 _lastRecoveredSeekAt = _lastSeekAt;
                                 _seekRecoveryAttempts = _seekRecoveryAttempts + 1;
                                 _lastProgressAt = diag_tickTime;

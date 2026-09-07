@@ -180,6 +180,17 @@ public static partial class Exports
             throw new InvalidOperationException("Could not parse YouTube URL.");
         }
 
+        if (forceRefresh)
+        {
+            HlsAudioCache.Invalidate(videoId);
+        }
+        else if (HlsAudioCache.TryGet(videoId, out var cachedAudioPath))
+        {
+            return cachedAudioPath;
+        }
+
+        using var resolveTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(100));
+        var cancellationToken = resolveTimeout.Token;
         var cacheKey = "video:" + videoId;
         var cachedStreamUrl = forceRefresh ? null : TryGetCachedStreamUrl(cacheKey);
         if (!string.IsNullOrEmpty(cachedStreamUrl))
@@ -189,10 +200,11 @@ public static partial class Exports
 
         var cachedWatchContext = GetCachedWatchPageContext();
         Task<WatchPageContext?>? watchContextTask = cachedWatchContext is null
-            ? FetchAndCacheWatchPageContextAsync(videoId, CancellationToken.None)
+            ? FetchAndCacheWatchPageContextAsync(videoId, cancellationToken)
             : null;
 
         var loginRequired = false;
+        string? failureReason = null;
         string? streamUrl = null;
         try
         {
@@ -200,13 +212,14 @@ public static partial class Exports
                 TryResolveAudioStreamUrlAsync(
                     videoId,
                     clientProfile,
-                    CancellationToken.None,
+                    cancellationToken,
                     cachedWatchContext?.ApiKey,
-                    cachedWatchContext?.VisitorData));
+                    cachedWatchContext?.VisitorData), reportFailures: true);
         }
-        catch (InvalidOperationException ex) when (ex.Message.Contains("requires sign-in", StringComparison.Ordinal))
+        catch (InvalidOperationException ex)
         {
-            loginRequired = true;
+            loginRequired = ex.Message.Contains("requires sign-in", StringComparison.Ordinal);
+            failureReason = ex.Message;
             // Retry below with a fresh visitor context before reporting the restriction.
         }
         if (!string.IsNullOrWhiteSpace(streamUrl))
@@ -217,12 +230,12 @@ public static partial class Exports
 
         var watchContext = watchContextTask is not null
             ? await watchContextTask
-            : await FetchAndCacheWatchPageContextAsync(videoId, CancellationToken.None);
+            : await FetchAndCacheWatchPageContextAsync(videoId, cancellationToken);
 
-        if (watchContext is not null)
+        if (watchContext is not null && !cancellationToken.IsCancellationRequested)
         {
             streamUrl = await TryResolveAcrossProfilesAsync(clientProfile =>
-                TryResolveAudioStreamUrlAsync(videoId, clientProfile, CancellationToken.None, watchContext.ApiKey, watchContext.VisitorData));
+                TryResolveAudioStreamUrlAsync(videoId, clientProfile, cancellationToken, watchContext.ApiKey, watchContext.VisitorData), reportFailures: true);
             if (!string.IsNullOrWhiteSpace(streamUrl))
             {
                 RememberStreamUrl(cacheKey, streamUrl);
@@ -232,7 +245,7 @@ public static partial class Exports
 
         throw new InvalidOperationException(loginRequired
             ? "YouTube requires sign-in for this video."
-            : "No playable audio stream found.");
+            : failureReason ?? "No playable audio stream found.");
     }
 
     private static async Task WarmupAsync()
@@ -313,19 +326,29 @@ public static partial class Exports
             : "Could not resolve track title.");
     }
 
-    private static async Task<string?> TryResolveAcrossProfilesAsync(Func<YoutubeClientProfile, Task<string?>> resolver)
+    private static async Task<string?> TryResolveAcrossProfilesAsync(
+        Func<YoutubeClientProfile, Task<string?>> resolver, bool reportFailures = false)
     {
         var loginRequired = false;
+        var failures = new List<string>();
         foreach (var clientProfile in ClientProfiles)
         {
             string? result;
             try
             {
-                result = await TryResolveProfileAsync(clientProfile, resolver);
+                result = await resolver(clientProfile);
             }
             catch (YoutubeLoginRequiredException)
             {
                 loginRequired = true;
+                continue;
+            }
+            catch (Exception ex)
+            {
+                // Keep useful failure details without exposing signed media URLs.
+                var reason = ex is OperationCanceledException ? "request timed out" : ex.Message;
+                reason = Regex.Replace(reason, @"https?://\S+", "[media URL]");
+                failures.Add(clientProfile.ClientName + ": " + Sanitize(reason));
                 continue;
             }
 
@@ -335,28 +358,18 @@ public static partial class Exports
             }
         }
 
+        // Title lookup keeps its original fresh-context retry on transient errors.
+        if (reportFailures && failures.Count > 0)
+        {
+            throw new InvalidOperationException("Audio preparation failed: " + string.Join("; ", failures));
+        }
+
         if (loginRequired)
         {
             throw new InvalidOperationException("YouTube requires sign-in for this video.");
         }
 
         return null;
-    }
-
-    private static async Task<string?> TryResolveProfileAsync(YoutubeClientProfile clientProfile, Func<YoutubeClientProfile, Task<string?>> resolver)
-    {
-        try
-        {
-            return await resolver(clientProfile);
-        }
-        catch (YoutubeLoginRequiredException)
-        {
-            throw;
-        }
-        catch
-        {
-            return null;
-        }
     }
 
     private static async Task<PlaylistResult> ResolvePlaylistAsync(string input)
@@ -445,6 +458,17 @@ public static partial class Exports
 
         using var document = JsonDocument.Parse(payload);
         ThrowIfLoginRequired(document.RootElement);
+        if (document.RootElement.TryGetProperty("streamingData", out var streamingData) &&
+            streamingData.TryGetProperty("hlsManifestUrl", out var hlsManifestElement) &&
+            hlsManifestElement.GetString() is { Length: > 0 } hlsManifestUrl)
+        {
+            // MFPlay cannot open an HLS manifest, and some signed DASH M4A URLs
+            // terminate at position zero. Cache the audio-only HLS ADTS segments
+            // as one seekable local file, without transcoding or extra runtimes.
+            return await HlsAudioCache.PrepareAsync(Http.Value, videoId, hlsManifestUrl,
+                clientProfile.UserAgent, cancellationToken);
+        }
+
         if (TrySelectAudioUrl(document.RootElement, out var audioUrl))
         {
             return await IsPlayableStreamUrlAsync(audioUrl, clientProfile.UserAgent, cancellationToken)
@@ -693,7 +717,9 @@ public static partial class Exports
                 ? parsedItag
                 : 0;
 
-            var priority = itag == 139 ? 3 : (itag == 140 ? 2 : 1);
+            // Prefer AAC-LC for the direct-stream fallback. Container handling
+            // is addressed by the HLS cache, independently of codec selection.
+            var priority = itag == 140 ? 3 : (itag == 139 ? 2 : 1);
             if (priority > bestPriority || (priority == bestPriority && bitrate < bestBitrate))
             {
                 bestPriority = priority;
@@ -1480,7 +1506,8 @@ public static partial class Exports
 
     private static string? TryGetCachedStreamUrl(string input)
     {
-        return StreamCache.TryGet(input, out var streamUrl) && !string.IsNullOrWhiteSpace(streamUrl)
+        return StreamCache.TryGet(input, out var streamUrl) && !string.IsNullOrWhiteSpace(streamUrl) &&
+            (streamUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase) || File.Exists(streamUrl))
             ? streamUrl
             : null;
     }

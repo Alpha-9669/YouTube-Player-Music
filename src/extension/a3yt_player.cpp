@@ -26,7 +26,7 @@
 
 namespace {
 
-constexpr char kVersion[] = "A3YTPlayer 0.7.1";
+constexpr char kVersion[] = "A3YTPlayer 0.7.2";
 constexpr char kPlaylistMetaSeparator = '\x1D';
 constexpr char kPlaylistRecordSeparator = '\x1E';
 constexpr char kPlaylistFieldSeparator = '\x1F';
@@ -55,8 +55,15 @@ enum class PlayerState {
 struct PlayerHandle {
     IMFPMediaPlayer* player = nullptr;
     IMFPMediaItem* mediaItem = nullptr;
+    HANDLE fileLease = INVALID_HANDLE_VALUE;
     std::string sourceUrl;
     std::string lastError;
+
+    ~PlayerHandle() {
+        if (fileLease != INVALID_HANDLE_VALUE) {
+            CloseHandle(fileLease);
+        }
+    }
 };
 
 enum class PlaybackStage {
@@ -748,6 +755,20 @@ void SetStateIfCurrent(std::uint64_t serial, PlaybackStage stage, const std::str
     g_lastError = Sanitize(error);
 }
 
+HRESULT AcquirePlayerFileLease(PlayerHandle* player, const std::wstring& mediaUrl) {
+    // URL-backed playback has no local file to protect from cache eviction.
+    if (mediaUrl.find(L"://") != std::wstring::npos) {
+        return S_OK;
+    }
+
+    player->fileLease = CreateFileW(mediaUrl.c_str(), GENERIC_READ, FILE_SHARE_READ,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (player->fileLease == INVALID_HANDLE_VALUE) {
+        return HRESULT_FROM_WIN32(GetLastError());
+    }
+    return S_OK;
+}
+
 HRESULT StartPlayerFromUrl(
     const std::wstring& mediaUrl,
     int volume,
@@ -776,6 +797,13 @@ HRESULT StartPlayerFromUrl(
         return E_FAIL;
     }
 
+    const HRESULT leaseHr = AcquirePlayerFileLease(player, mediaUrl);
+    if (FAILED(leaseHr)) {
+        delete player;
+        callback->Release();
+        return leaseHr;
+    }
+
     IMFPMediaPlayer* mediaPlayer = nullptr;
     const HRESULT createHr = MFPCreateMediaPlayer(
         mediaUrl.c_str(),
@@ -792,7 +820,8 @@ HRESULT StartPlayerFromUrl(
 
     player->player = mediaPlayer;
     player->sourceUrl = WideToUtf8(mediaUrl);
-    callback->Reset();
+    // Autoplay may already have delivered callbacks before creation returns.
+    // This callback is new, so resetting it here would discard those events.
 
     const HRESULT volumeHr = player->player->SetVolume(static_cast<float>(std::clamp(volume, 0, 100)) / 100.0f);
     if (FAILED(volumeHr)) {
@@ -835,6 +864,13 @@ HRESULT StartPlayerFromUrlAtPosition(
     PlayerHandle* player = new PlayerHandle();
     PlayerCallback* callback = new PlayerCallback();
 
+    const HRESULT leaseHr = AcquirePlayerFileLease(player, mediaUrl);
+    if (FAILED(leaseHr)) {
+        delete player;
+        callback->Release();
+        return leaseHr;
+    }
+
     IMFPMediaPlayer* mediaPlayer = nullptr;
     const HRESULT createHr = MFPCreateMediaPlayer(
         nullptr,
@@ -851,7 +887,6 @@ HRESULT StartPlayerFromUrlAtPosition(
 
     player->player = mediaPlayer;
     player->sourceUrl = WideToUtf8(mediaUrl);
-    callback->Reset();
 
     const HRESULT volumeHr = player->player->SetVolume(static_cast<float>(std::clamp(volume, 0, 100)) / 100.0f);
     if (FAILED(volumeHr)) {
@@ -1063,26 +1098,59 @@ bool GetCachedPlaylistItem(std::uint64_t token, int index, PlaylistEntry* entry)
     return true;
 }
 
-bool TryUsePrefetchedResolve(const std::string& input, std::wstring* mediaUrl) {
+enum class PrefetchedResolveResult {
+    Missing,
+    Ready,
+    Failed,
+    Superseded
+};
+
+PrefetchedResolveResult TryUsePrefetchedResolve(
+    const std::string& input,
+    std::uint64_t commandSerial,
+    std::wstring* mediaUrl,
+    std::string* errorMessage) {
     std::unique_lock<std::mutex> lock(g_mutex);
+    if (g_shutdownRequested || commandSerial != g_commandSerial) {
+        return PrefetchedResolveResult::Superseded;
+    }
     if (input.empty() || input != g_prefetchUrl) {
-        return false;
+        return PrefetchedResolveResult::Missing;
     }
 
     const std::uint64_t serial = g_prefetchSerial;
-    while (!g_shutdownRequested && g_prefetchRunning && serial == g_prefetchSerial && input == g_prefetchUrl) {
+    while (!g_shutdownRequested && commandSerial == g_commandSerial && g_prefetchRunning &&
+           serial == g_prefetchSerial && input == g_prefetchUrl) {
         g_prefetchCv.wait(lock);
     }
 
-    if (g_shutdownRequested || serial != g_prefetchSerial || input != g_prefetchUrl || g_prefetchRunning || g_prefetchResolvedUrl.empty()) {
-        return false;
+    if (g_shutdownRequested || commandSerial != g_commandSerial) {
+        return PrefetchedResolveResult::Superseded;
+    }
+    if (serial != g_prefetchSerial || input != g_prefetchUrl || g_prefetchRunning) {
+        return PrefetchedResolveResult::Missing;
+    }
+
+    if (g_prefetchResolvedUrl.empty()) {
+        if (g_prefetchError.empty()) {
+            return PrefetchedResolveResult::Missing;
+        }
+
+        // The matching prefetch already spent the resolver's timeout budget.
+        // Consume its failure once instead of resolving the same item for another
+        // full timeout; a later explicit play may still make a fresh attempt.
+        if (errorMessage != nullptr) {
+            *errorMessage = g_prefetchError;
+        }
+        g_prefetchError.clear();
+        return PrefetchedResolveResult::Failed;
     }
 
     if (mediaUrl != nullptr) {
         *mediaUrl = g_prefetchResolvedUrl;
     }
 
-    return true;
+    return PrefetchedResolveResult::Ready;
 }
 
 void PrefetchWorker() {
@@ -1160,6 +1228,8 @@ void StartPrefetchLocked(const std::string& url) {
     g_prefetchUrl = url;
     g_prefetchResolvedUrl.clear();
     g_prefetchError.clear();
+    // A current playback waiter must not wait for an obsolete prefetch to finish.
+    g_prefetchCv.notify_all();
 
     if (!g_prefetchWorkerActive) {
         g_prefetchWorkerActive = true;
@@ -1788,7 +1858,8 @@ bool ApplyPendingSeekIfNeeded(
     const std::wstring& mediaUrl,
     int volume,
     std::uint64_t serial,
-    bool paused) {
+    bool paused,
+    bool* seekApplied = nullptr) {
     if (player == nullptr) {
         return true;
     }
@@ -1796,6 +1867,9 @@ bool ApplyPendingSeekIfNeeded(
     std::int64_t requestedMs = g_pendingSeekMs.exchange(-1);
     if (requestedMs < 0) {
         return true;
+    }
+    if (seekApplied != nullptr) {
+        *seekApplied = true;
     }
 
     std::int64_t durationMs = g_timelineDurationMs.load();
@@ -1852,8 +1926,14 @@ void WorkerMain() noexcept {
 
         std::wstring resolvedUrl;
         std::string prepareError;
-        const bool usedPrefetch = TryUsePrefetchedResolve(url, &resolvedUrl);
-        if (!usedPrefetch && !ResolveAudioStream(url, &resolvedUrl, &prepareError)) {
+        const PrefetchedResolveResult prefetchResult = TryUsePrefetchedResolve(url, handledSerial, &resolvedUrl, &prepareError);
+        if (prefetchResult == PrefetchedResolveResult::Superseded || HasNewCommand(handledSerial)) {
+            lock.lock();
+            continue;
+        }
+        const bool usedPrefetch = prefetchResult == PrefetchedResolveResult::Ready;
+        if (prefetchResult == PrefetchedResolveResult::Failed ||
+            (!usedPrefetch && !ResolveAudioStream(url, &resolvedUrl, &prepareError))) {
             DebugLog("worker_command|resolve_fail|serial=" + std::to_string(handledSerial) + "|error=" + prepareError);
             SetStateIfCurrent(handledSerial, PlaybackStage::Error, prepareError);
             lock.lock();
@@ -1875,7 +1955,8 @@ void WorkerMain() noexcept {
 
         HRESULT hr = StartPlayerFromUrl(resolvedUrl, activeVolume, &player, &callback);
         if (FAILED(hr) && !HasNewCommand(handledSerial)) {
-            DebugLog("worker_command|start_fail_first|serial=" + std::to_string(handledSerial) + "|error=start_failed");
+            DebugLog("worker_command|start_fail_first|serial=" + std::to_string(handledSerial) +
+                     "|error=" + HResultMessage("mfplay_start", hr));
             std::wstring retriedUrl;
             std::string retryError;
             if (ResolveAudioStream(url, &retriedUrl, &retryError)) {
@@ -1888,8 +1969,9 @@ void WorkerMain() noexcept {
         }
 
         if (FAILED(hr)) {
-            DebugLog("worker_command|start_fail_final|serial=" + std::to_string(handledSerial) + "|error=start_failed");
-            SetStateIfCurrent(handledSerial, PlaybackStage::Error, "mfplay|start_failed");
+            const std::string startError = HResultMessage("mfplay_start", hr);
+            DebugLog("worker_command|start_fail_final|serial=" + std::to_string(handledSerial) + "|error=" + startError);
+            SetStateIfCurrent(handledSerial, PlaybackStage::Error, startError);
             lock.lock();
             continue;
         }
@@ -1899,6 +1981,8 @@ void WorkerMain() noexcept {
         bool failed = false;
         bool started = false;
         bool paused = false;
+        bool hadSeekRequest = false;
+        std::int64_t maxObservedPositionMs = g_timelinePositionMs.load();
         int automaticRecoveryAttempts = 0;
         while (!HasNewCommand(handledSerial)) {
             bool pauseRequested = false;
@@ -1940,12 +2024,13 @@ void WorkerMain() noexcept {
                 }
             }
 
-            if (!ApplyPendingSeekIfNeeded(player, callback, resolvedUrl, activeVolume, handledSerial, paused)) {
+            if (!ApplyPendingSeekIfNeeded(player, callback, resolvedUrl, activeVolume, handledSerial, paused, &hadSeekRequest)) {
                 failed = true;
                 break;
             }
 
             UpdateTimelineFromPlayer(player, callback);
+            maxObservedPositionMs = std::max<std::int64_t>(maxObservedPositionMs, g_timelinePositionMs.load());
 
             if (callback != nullptr && callback->SawError()) {
                 const std::string playbackError = callback->LastErrorMessage();
@@ -1995,6 +2080,18 @@ void WorkerMain() noexcept {
             }
 
             if (callback != nullptr && callback->PlaybackEnded()) {
+                const std::int64_t durationMs = g_timelineDurationMs.load();
+                // Some unsupported media layouts report successful Play/Ended
+                // without ever advancing. Do not count that as a completed song.
+                // Very short media and explicit seeks to the end remain valid.
+                if (!hadSeekRequest && maxObservedPositionMs <= 0 && durationMs > 1000) {
+                    const std::string endError = "mfplay|unexpected_end|positionMs=" +
+                        std::to_string(maxObservedPositionMs) + "|durationMs=" + std::to_string(durationMs);
+                    DebugLog("worker_command|premature_end|serial=" + std::to_string(handledSerial) +
+                             "|error=" + endError);
+                    SetStateIfCurrent(handledSerial, PlaybackStage::Error, endError);
+                    failed = true;
+                }
                 break;
             }
 
@@ -2134,6 +2231,7 @@ std::pair<std::string, int> HandleCommand(const std::string& command, const std:
         ClearPendingSeekState();
         ClearPendingVolumeState();
         g_commandCv.notify_one();
+        g_prefetchCv.notify_all();
         DebugLog("command|stop");
         return {"ok|stopped", 0};
     }
@@ -2172,6 +2270,7 @@ std::pair<std::string, int> HandleCommand(const std::string& command, const std:
         }
 
         g_commandCv.notify_one();
+        g_prefetchCv.notify_all();
         DebugLog("command|play|volume=" + std::to_string(volume) + "|url=" + Sanitize(url));
         return {"ok|queued", 0};
     }
