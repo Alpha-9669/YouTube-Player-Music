@@ -27,6 +27,11 @@
                 <English>Local volume (0-100)</English>
                 <Russian>Локальная громкость (0-100)</Russian>
             </Key>
+            <Key ID="STR_A3YTR_VOLUME_LOCAL">
+                <Original>Vehicle radio local volume (0-100)</Original>
+                <English>Vehicle radio local volume (0-100)</English>
+                <Russian>Локальная громкость радио (0-100)</Russian>
+            </Key>
             <Key ID="STR_A3YT_SETTING_LOCAL_VOLUME_TOOLTIP">
                 <Original>Client-only volume. By default the final volume is Zeus volume * local volume / 100.</Original>
                 <English>Client-only volume. By default the final volume is Zeus volume * local volume / 100.</English>

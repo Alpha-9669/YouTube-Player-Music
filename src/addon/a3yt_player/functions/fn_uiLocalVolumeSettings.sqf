@@ -12,6 +12,7 @@ if (isNull _display) exitWith {
 private _volumeCtrl = _display displayCtrl 2611931;
 private _overrideCtrl = _display displayCtrl 2611932;
 private _effectiveCtrl = _display displayCtrl 2611933;
+private _radioCtrl = _display displayCtrl 2611936;
 
 private _fnc_readVolume = {
     private _volumeText = trim ctrlText _volumeCtrl;
@@ -45,6 +46,7 @@ switch (toLower _mode) do {
         if !(_localVolume isEqualType 0) then {_localVolume = 100;};
         if !(_override isEqualType true) then {_override = false;};
         _volumeCtrl ctrlSetText str _localVolume;
+        _radioCtrl ctrlSetText str (profileNamespace getVariable ["A3YTR_localVolume", 100]);
         _overrideCtrl cbSetChecked _override;
 
         _volumeCtrl ctrlAddEventHandler ["KeyUp", {
@@ -64,12 +66,14 @@ switch (toLower _mode) do {
 
     case "apply": {
         private _localVolume = call _fnc_readVolume;
+        private _radioVolume = round (((parseNumber ctrlText _radioCtrl) max 0) min 100);
         private _override = cbChecked _overrideCtrl;
 
         missionNamespace setVariable ["A3YT_localVolume", _localVolume];
         missionNamespace setVariable ["A3YT_localVolumeOverride", _override];
         profileNamespace setVariable ["A3YT_localVolume", _localVolume];
         profileNamespace setVariable ["A3YT_localVolumeOverride", _override];
+        profileNamespace setVariable ["A3YTR_localVolume", _radioVolume];
         saveProfileNamespace;
 
         _volumeCtrl ctrlSetText str _localVolume;

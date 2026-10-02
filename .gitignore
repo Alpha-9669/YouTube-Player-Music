@@ -35,6 +35,11 @@
 /mod/@YouTube Player Music/addons/*.bisign
 /mod/@YouTube Player Music/Key/*.bikey
 /mod/@A3YTPlayer/
+/mod/@YouTube Player Vehicle Radio/*.dll
+/mod/@YouTube Player Vehicle Radio/mod.cpp
+/mod/@YouTube Player Vehicle Radio/addons/*.pbo
+/mod/@YouTube Player Vehicle Radio/addons/*.bisign
+/mod/@YouTube Player Vehicle Radio/Key/*.bikey
 
 # Generated tool artifacts
 /tools/youtube_player_music.dll

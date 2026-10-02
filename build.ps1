@@ -12,8 +12,11 @@ $modFolderName = "@YouTube Player Music"
 $stagedModRoot = Join-Path $buildDir "${modFolderName}_staged"
 $legacyStagedModRoot = Join-Path $buildDir "@A3YTPlayer_staged"
 $srcAddonDir = Join-Path $root "src\\addon\\a3yt_player"
+$srcRadioAddonDir = Join-Path $root "src\\addon\\a3yt_radio"
 $nativeProject = Join-Path $root "src\\native\\A3YT.Native\\A3YT.Native.csproj"
 $modRoot = Join-Path $root ("mod\\" + $modFolderName)
+$radioModRoot = Join-Path $root "mod\\@YouTube Player Vehicle Radio"
+$radioStagedModRoot = Join-Path $buildDir "@YouTube Player Vehicle Radio_staged"
 $legacyModRoot = Join-Path $root "mod\\@A3YTPlayer"
 $modAddonsDir = Join-Path $modRoot "addons"
 $modKeysDir = Join-Path $modRoot "Key"
@@ -321,6 +324,7 @@ function Invoke-MsvcExtensionBuild {
     $clArgs += @(
         "/OUT:$OutputDll",
         "mfplat.lib",
+        "mf.lib",
         "mfplay.lib",
         "mfuuid.lib",
         "ole32.lib",
@@ -433,6 +437,9 @@ if ((Test-Path $legacyStagedModRoot) -and !(Test-Path $stagedModRoot)) {
 Ensure-Directory $modRoot
 Ensure-Directory $modAddonsDir
 Ensure-Directory $modKeysDir
+Ensure-Directory $radioModRoot
+Ensure-Directory (Join-Path $radioModRoot "addons")
+Ensure-Directory (Join-Path $radioModRoot "Key")
 
 Remove-PathIfExists (Join-Path $root "src\\native\\A3YT.Native\\bin\\Release")
 Remove-PathIfExists (Join-Path $root "src\\native\\A3YT.Native\\obj\\Release")
@@ -461,9 +468,18 @@ if (!$SkipPbo) {
         throw "DSSignFile.exe not found: $dsSignFile"
     }
 
-    & $addonBuilder $srcAddonDir $modAddonsDir -packonly
-    if ($LASTEXITCODE -ne 0) {
-        throw "AddonBuilder failed."
+    # Isolate every pack from AddonBuilder's old Windows TEMP cache.
+    $packTemp = [IO.Path]::GetFullPath((Join-Path $buildDir ('addon-temp-' + [guid]::NewGuid().ToString('N'))))
+    $packParent = [IO.Path]::GetFullPath($buildDir).TrimEnd('\') + '\'
+    if (!$packTemp.StartsWith($packParent, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Unsafe addon temporary directory.'
+    }
+    New-Item -ItemType Directory -Path $packTemp | Out-Null
+    try {
+        & $addonBuilder $srcAddonDir $modAddonsDir -packonly -clear "-temp=$packTemp"
+        if ($LASTEXITCODE -ne 0) { throw 'AddonBuilder failed.' }
+    } finally {
+        if (Test-Path -LiteralPath $packTemp) { Remove-Item -LiteralPath $packTemp -Recurse -Force }
     }
 
     $sourcePbo = Join-Path $modAddonsDir "a3yt_player.pbo"
@@ -485,6 +501,24 @@ if (!$SkipPbo) {
         Copy-Item $signingKeyPair.PublicKey (Join-Path $modKeysDir "$($signingKeyPair.BaseName).bikey") -Force
     } else {
         Write-Warning "No signing key pair found under $keyRoot. Built unsigned PBO for local development."
+    }
+
+    $radioPackTemp = [IO.Path]::GetFullPath((Join-Path $buildDir ('radio-temp-' + [guid]::NewGuid().ToString('N'))))
+    if (!$radioPackTemp.StartsWith($packParent, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Unsafe radio addon temporary directory.'
+    }
+    New-Item -ItemType Directory -Path $radioPackTemp | Out-Null
+    try {
+        & $addonBuilder $srcRadioAddonDir (Join-Path $radioModRoot "addons") -packonly -clear "-temp=$radioPackTemp"
+        if ($LASTEXITCODE -ne 0) { throw 'Radio AddonBuilder failed.' }
+    } finally {
+        if (Test-Path -LiteralPath $radioPackTemp) { Remove-Item -LiteralPath $radioPackTemp -Recurse -Force }
+    }
+    $radioPbo = Join-Path $radioModRoot "addons\\a3yt_radio.pbo"
+    if ($signingKeyPair) {
+        & $dsSignFile $signingKeyPair.PrivateKey $radioPbo
+        if ($LASTEXITCODE -ne 0) { throw "DSSignFile failed for $radioPbo" }
+        Copy-Item $signingKeyPair.PublicKey (Join-Path $radioModRoot "Key\\$($signingKeyPair.BaseName).bikey") -Force
     }
 }
 
@@ -516,6 +550,14 @@ hideName = 0;
 hidePicture = 0;
 "@
 Write-Utf8File -Path (Join-Path $modRoot "mod.cpp") -Content $modCpp
+Write-Utf8File -Path (Join-Path $radioModRoot "mod.cpp") -Content @"
+name = "YouTube Player Vehicle Radio";
+description = "Vehicle radio addon for YouTube Player Music. Requires the main mod and CBA_A3.";
+tooltip = "YouTube Player Vehicle Radio";
+author = "Alpha";
+hideName = 0;
+hidePicture = 0;
+"@
 
 foreach ($obsolete in @("yt-dlp.exe", "ffplay.exe")) {
     Remove-Item (Join-Path $modRoot $obsolete) -Force -ErrorAction SilentlyContinue
@@ -547,6 +589,11 @@ if (Test-Path $stagedModRoot) {
 }
 
 Copy-Item $modRoot $stagedModRoot -Recurse -Force
+if (Test-Path $radioStagedModRoot) {
+    Remove-Item $radioStagedModRoot -Recurse -Force
+}
+Copy-Item $radioModRoot $radioStagedModRoot -Recurse -Force
 
 Write-Host "Build complete."
 Write-Host "Mod root: $modRoot"
+Write-Host "Radio mod root: $radioModRoot"

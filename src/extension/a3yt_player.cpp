@@ -3,6 +3,7 @@
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfplay.h>
+#include "audio_output.hpp"
 #include <propidl.h>
 #include <propsys.h>
 
@@ -22,6 +23,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -58,6 +60,8 @@ struct PlayerHandle {
     HANDLE fileLease = INVALID_HANDLE_VALUE;
     std::string sourceUrl;
     std::string lastError;
+    a3yt::audio::Output audioOutput;
+    Microsoft::WRL::ComPtr<IMFAudioStreamVolume> streamVolume;
 
     ~PlayerHandle() {
         if (fileLease != INVALID_HANDLE_VALUE) {
@@ -101,6 +105,7 @@ bool g_warmupCompleted = false;
 bool g_pauseRequested = false;
 PlaybackStage g_stage = PlaybackStage::Idle;
 std::string g_lastError;
+std::string g_audioOutput = "not_started";
 std::uint64_t g_playlistToken = 0;
 std::vector<PlaylistEntry> g_playlistItems;
 std::string g_playlistTitle;
@@ -769,6 +774,34 @@ HRESULT AcquirePlayerFileLease(PlayerHandle* player, const std::wstring& mediaUr
     return S_OK;
 }
 
+HRESULT ConfigureAudioOutput(PlayerHandle* player, IMFPMediaItem* item) {
+    player->audioOutput = a3yt::audio::SelectOutput();
+    const HRESULT hr = a3yt::audio::Configure(item, player->audioOutput, player->streamVolume.ReleaseAndGetAddressOf());
+    const std::string description = std::string(player->audioOutput.gameSession ? "arma_session|" : "default_fallback|") +
+        Sanitize(WideToUtf8(player->audioOutput.name));
+    { std::lock_guard<std::mutex> lock(g_mutex); g_audioOutput = description; }
+    DebugLog("audio_output|" + description + "|" + HResultMessage("configure", hr));
+    return hr;
+}
+
+HRESULT ApplyStreamVolume(PlayerHandle* player, int volume, bool waitForReady = false) {
+    if (!player || !player->streamVolume) return MF_E_NOT_INITIALIZED;
+    // Only this renderer's channels: never change endpoint or game-session volume.
+    // SetMediaItem initializes the renderer asynchronously. Do not Play until its
+    // initial gain is applied, including when starting muted or recovering a track.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    UINT32 count = 0;
+    for (;;) {
+        const HRESULT hr = player->streamVolume->GetChannelCount(&count);
+        if (FAILED(hr)) return hr;
+        if (count != 0) break;
+        if (!waitForReady || std::chrono::steady_clock::now() >= deadline) return MF_E_NOT_INITIALIZED;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const std::vector<float> levels(count, static_cast<float>(std::clamp(volume, 0, 100)) / 100.0f);
+    return player->streamVolume->SetAllVolumes(count, levels.data());
+}
+
 HRESULT StartPlayerFromUrl(
     const std::wstring& mediaUrl,
     int volume,
@@ -806,8 +839,8 @@ HRESULT StartPlayerFromUrl(
 
     IMFPMediaPlayer* mediaPlayer = nullptr;
     const HRESULT createHr = MFPCreateMediaPlayer(
-        mediaUrl.c_str(),
-        autoPlay ? TRUE : FALSE,
+        nullptr,
+        FALSE,
         MFP_OPTION_FREE_THREADED_CALLBACK | MFP_OPTION_NO_REMOTE_DESKTOP_OPTIMIZATION,
         callback,
         nullptr,
@@ -820,21 +853,21 @@ HRESULT StartPlayerFromUrl(
 
     player->player = mediaPlayer;
     player->sourceUrl = WideToUtf8(mediaUrl);
-    // Autoplay may already have delivered callbacks before creation returns.
-    // This callback is new, so resetting it here would discard those events.
-
-    const HRESULT volumeHr = player->player->SetVolume(static_cast<float>(std::clamp(volume, 0, 100)) / 100.0f);
-    if (FAILED(volumeHr)) {
-        player->lastError = HResultMessage("mfplay_volume", volumeHr);
-        StopAndReleasePlayer(player);
-        callback->Release();
-        return volumeHr;
-    }
+    // Configure the renderer before setting the item or starting playback.
 
     IMFPMediaItem* mediaItem = nullptr;
-    const HRESULT itemHr = player->player->GetMediaItem(&mediaItem);
-    if (SUCCEEDED(itemHr) && mediaItem != nullptr) {
-        player->mediaItem = mediaItem;
+    HRESULT itemHr = player->player->CreateMediaItemFromURL(mediaUrl.c_str(), TRUE, 0, &mediaItem);
+    if (SUCCEEDED(itemHr) && mediaItem) {
+        itemHr = ConfigureAudioOutput(player, mediaItem);
+        if (SUCCEEDED(itemHr)) itemHr = player->player->SetMediaItem(mediaItem);
+        if (SUCCEEDED(itemHr)) itemHr = ApplyStreamVolume(player, volume, true);
+    }
+    player->mediaItem = mediaItem;
+    if (SUCCEEDED(itemHr) && autoPlay) itemHr = player->player->Play();
+    if (FAILED(itemHr) || !mediaItem) {
+        StopAndReleasePlayer(player);
+        callback->Release();
+        return FAILED(itemHr) ? itemHr : E_FAIL;
     }
 
     *playerOut = player;
@@ -888,14 +921,6 @@ HRESULT StartPlayerFromUrlAtPosition(
     player->player = mediaPlayer;
     player->sourceUrl = WideToUtf8(mediaUrl);
 
-    const HRESULT volumeHr = player->player->SetVolume(static_cast<float>(std::clamp(volume, 0, 100)) / 100.0f);
-    if (FAILED(volumeHr)) {
-        player->lastError = HResultMessage("mfplay_volume", volumeHr);
-        StopAndReleasePlayer(player);
-        callback->Release();
-        return volumeHr;
-    }
-
     IMFPMediaItem* mediaItem = nullptr;
     const HRESULT itemHr = player->player->CreateMediaItemFromURL(mediaUrl.c_str(), TRUE, 0, &mediaItem);
     if (FAILED(itemHr) || mediaItem == nullptr) {
@@ -917,7 +942,9 @@ HRESULT StartPlayerFromUrlAtPosition(
         return positionHr;
     }
 
-    const HRESULT setItemHr = player->player->SetMediaItem(mediaItem);
+    HRESULT setItemHr = ConfigureAudioOutput(player, mediaItem);
+    if (SUCCEEDED(setItemHr)) setItemHr = player->player->SetMediaItem(mediaItem);
+    if (SUCCEEDED(setItemHr)) setItemHr = ApplyStreamVolume(player, volume, true);
     if (FAILED(setItemHr)) {
         mediaItem->Release();
         StopAndReleasePlayer(player);
@@ -1276,7 +1303,7 @@ bool SetPlayerVolume(PlayerHandle* player, int volume, std::string* errorMessage
     }
 
     const int clampedVolume = std::clamp(volume, 0, 100);
-    const HRESULT hr = player->player->SetVolume(static_cast<float>(clampedVolume) / 100.0f);
+    const HRESULT hr = ApplyStreamVolume(player, clampedVolume);
     if (FAILED(hr)) {
         const std::string message = HResultMessage("mfplay_volume", hr);
         player->lastError = message;
@@ -2175,8 +2202,156 @@ std::string GetTimeline() {
     return timeline;
 }
 
+// Vehicle radio is intentionally separate from the Zeus queue. Each audible
+// vehicle owns one MFPlay instance; the SQF listener drops distant instances.
+struct RadioChannel {
+    std::atomic<bool> stopped{false};
+    std::atomic<int> volume{0};
+    std::atomic<int> pan{0};
+    std::atomic<int> state{0}; // 0 resolving, 1 playing, 2 ended, 3 error
+    std::atomic<std::int64_t> durationMs{0};
+    std::string url;
+    std::int64_t offsetMs = 0;
+    std::chrono::steady_clock::time_point queuedAt = std::chrono::steady_clock::now();
+};
+
+std::mutex g_radioMutex;
+std::unordered_map<std::string, std::shared_ptr<RadioChannel>> g_radioChannels;
+
+void RadioWorker(std::shared_ptr<RadioChannel> channel) noexcept {
+    PlayerHandle* player = nullptr;
+    PlayerCallback* callback = nullptr;
+    struct BackendCleanup { ~BackendCleanup() { ShutdownPlaybackBackendThread(); } };
+    [[maybe_unused]] BackendCleanup backendCleanup;
+    try {
+        std::wstring mediaUrl;
+        std::string error;
+        if (!ResolveAudioStream(channel->url, &mediaUrl, &error) || channel->stopped) {
+            channel->state = 3;
+            return;
+        }
+        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - channel->queuedAt).count();
+        const auto startMs = std::clamp<std::int64_t>(channel->offsetMs + elapsedMs, 0, 86400000);
+        bool durationIsRemaining = startMs >= 1000;
+        HRESULT hr = durationIsRemaining
+            ? StartPlayerFromUrlAtPosition(mediaUrl, 0, startMs, &player, &callback)
+            : StartPlayerFromUrl(mediaUrl, 0, &player, &callback);
+        if (FAILED(hr) && startMs >= 1000 && !channel->stopped) {
+            durationIsRemaining = false;
+            hr = StartPlayerFromUrl(mediaUrl, 0, &player, &callback);
+            if (SUCCEEDED(hr)) SetPlayerPositionMs(player, startMs);
+        }
+        if (FAILED(hr) || !player || !callback) {
+            channel->state = 3;
+        } else {
+            int lastVolume = -1;
+            int lastPan = 999;
+            while (!channel->stopped && !callback->SawError() && !callback->PlaybackEnded()) {
+                const int volume = channel->volume.load();
+                const int pan = channel->pan.load();
+                if (volume != lastVolume || pan != lastPan) {
+                    UINT32 count = 0;
+                    if (player->streamVolume && SUCCEEDED(player->streamVolume->GetChannelCount(&count)) && count > 0) {
+                        const float gain = static_cast<float>(std::clamp(volume, 0, 100)) / 100.0f;
+                        std::vector<float> levels(count, gain);
+                        if (count >= 2) {
+                            const float p = static_cast<float>(std::clamp(pan, -100, 100)) / 100.0f;
+                            levels[0] *= 1.0f - std::max(0.0f, p);
+                            levels[1] *= 1.0f + std::min(0.0f, p);
+                        }
+                        player->streamVolume->SetAllVolumes(count, levels.data());
+                        lastVolume = volume;
+                        lastPan = pan;
+                    }
+                }
+                if (callback->SawPlay()) channel->state = 1;
+                if (channel->durationMs == 0) {
+                    PROPVARIANT duration{};
+                    PropVariantInit(&duration);
+                    if (SUCCEEDED(player->player->GetDuration(MFP_POSITIONTYPE_100NS, &duration))) {
+                        std::int64_t value = 0;
+                        if (TryReadPropVariantInt64(duration, &value) && value > 0)
+                            channel->durationMs = value / kHundredNsPerMillisecond +
+                                (durationIsRemaining ? startMs : 0);
+                    }
+                    PropVariantClear(&duration);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(75));
+            }
+            if (!channel->stopped) channel->state = callback->PlaybackEnded() ? 2 : 3;
+        }
+    } catch (...) {
+        channel->state = 3;
+    }
+    StopAndReleasePlayer(player);
+    if (callback) callback->Release();
+}
+
+std::pair<std::string, int> HandleRadioCommand(const std::string& command, const std::vector<std::string>& args) {
+    if (args.empty() || args[0].empty() || args[0].size() > 64 ||
+        !std::all_of(args[0].begin(), args[0].end(), [](unsigned char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+                (c >= 'A' && c <= 'Z') || c == '_' || c == '-';
+        })) return {"err|invalid_radio_id", 2};
+    const std::string& id = args[0];
+    std::lock_guard<std::mutex> lock(g_radioMutex);
+    auto found = g_radioChannels.find(id);
+    if (command == "radiostop") {
+        if (found != g_radioChannels.end()) {
+            found->second->stopped = true;
+            g_radioChannels.erase(found);
+        }
+        return {"ok|radio_stopped", 0};
+    }
+    if (command == "radiostatus") {
+        if (found == g_radioChannels.end()) return {"ok|radio|missing", 0};
+        const int state = found->second->state;
+        return {std::string("ok|radio|") + (state == 0 ? "resolving" : state == 1 ? "playing" : state == 2 ? "ended" : "error") +
+            "|" + std::to_string(found->second->durationMs.load()), 0};
+    }
+    if (command == "radiovolume") {
+        if (found == g_radioChannels.end()) return {"err|radio_missing", 2};
+        if (args.size() < 3) return {"err|missing_radio_volume", 1};
+        std::int64_t volume = 0, pan = 0;
+        if (!TryParseInt64Loose(args[1], &volume) || !TryParseInt64Loose(args[2], &pan))
+            return {"err|invalid_radio_volume", 2};
+        found->second->volume = static_cast<int>(std::clamp<std::int64_t>(volume, 0, 100));
+        found->second->pan = static_cast<int>(std::clamp<std::int64_t>(pan, -100, 100));
+        return {"ok|radio_volume", 0};
+    }
+    if (command == "radioplay") {
+        if (args.size() < 3 || args[1].empty() || args[1].size() > 2048)
+            return {"err|invalid_radio_url", 2};
+        std::int64_t offsetMs = 0;
+        if (!TryParseInt64Loose(args[2], &offsetMs)) return {"err|invalid_radio_offset", 2};
+        if (found == g_radioChannels.end() && g_radioChannels.size() >= 16)
+            return {"err|radio_limit", 2};
+        if (found != g_radioChannels.end()) found->second->stopped = true;
+        auto channel = std::make_shared<RadioChannel>();
+        channel->url = args[1];
+        channel->offsetMs = std::clamp<std::int64_t>(offsetMs, 0, 86400000);
+        g_radioChannels[id] = channel;
+        std::thread([channel] { RadioWorker(channel); }).detach();
+        return {"ok|radio_queued", 0};
+    }
+    return {"err|unknown_radio_command", 3};
+}
+
 std::pair<std::string, int> HandleCommand(const std::string& command, const std::vector<std::string>& args) {
+    std::string radioCommand = command;
+    std::transform(radioCommand.begin(), radioCommand.end(), radioCommand.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (radioCommand == "radioplay" || radioCommand == "radiovolume" ||
+        radioCommand == "radiostop" || radioCommand == "radiostatus")
+        return HandleRadioCommand(radioCommand, args);
     const std::string lower = a3yt::ToLowerAscii(command);
+
+    if (lower == "audiooutput") {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        return {"ok|audiooutput|" + g_audioOutput, 0};
+    }
 
     if (lower.empty() || lower == "version" || lower == "ping" || lower == "help") {
         return {std::string("ok|version|") + kVersion, 0};

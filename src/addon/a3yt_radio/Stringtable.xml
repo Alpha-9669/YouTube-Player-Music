@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project name="A3YTR"><Package name="A3YTR"><Container name="Core">
+<Key ID="STR_A3YTR_TITLE"><Original>Vehicle radio</Original><English>Vehicle radio</English><Russian>Радио транспорта</Russian></Key>
+<Key ID="STR_A3YTR_KEY"><Original>Open vehicle radio</Original><English>Open vehicle radio</English><Russian>Открыть радио транспорта</Russian></Key>
+<Key ID="STR_A3YTR_ADD"><Original>Add</Original><English>Add</English><Russian>Добавить</Russian></Key>
+<Key ID="STR_A3YTR_VOLUME"><Original>Broadcast volume (0-100)</Original><English>Broadcast volume (0-100)</English><Russian>Громкость передачи (0-100)</Russian></Key>
+<Key ID="STR_A3YTR_APPLY"><Original>Apply</Original><English>Apply</English><Russian>Применить</Russian></Key>
+<Key ID="STR_A3YTR_NEXT"><Original>Next</Original><English>Next</English><Russian>Далее</Russian></Key>
+<Key ID="STR_A3YTR_STOP"><Original>Stop</Original><English>Stop</English><Russian>Стоп</Russian></Key>
+<Key ID="STR_A3YTR_ENGINE"><Original>Start the engine to use radio</Original><English>Start the engine to use radio</English><Russian>Заведите двигатель для радио</Russian></Key>
+<Key ID="STR_A3YTR_INVALID"><Original>Use a YouTube video or playlist URL</Original><English>Use a YouTube video or playlist URL</English><Russian>Укажите ссылку на видео или плейлист YouTube</Russian></Key>
+</Container></Package></Project>

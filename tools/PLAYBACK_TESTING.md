@@ -52,3 +52,36 @@ The native debug log is `%LOCALAPPDATA%\Arma 3\A3YT_extension.log`.
 The standalone checks do not exercise Arma's multiplayer/Zeus UI. After copying
 the DLL and addon into an installed mod, restart Arma and check the two-item
 queue in-game. Keep the old installed files backed up for rollback.
+
+## Custom audio output and volume regression (2026-09-21)
+
+MFPlay's SetVolume can report success while leaving a custom renderer at unity
+gain. The extension now controls IMFAudioStreamVolume on its own renderer,
+including initial gain before Play. It does not set endpoint or session volume.
+
+From an x64 MSVC developer terminal, compile and run against a local audio-only
+AAC fixture (no resolver/network dependency):
+
+```powershell
+cl /nologo /EHsc /std:c++17 /W4 /WX /O2 /MT tools\audio_output_tests.cpp /Fo:build\audio_output_tests.obj /Fe:build\audio_output_tests.exe /link mfplat.lib mfplay.lib mf.lib mfuuid.lib ole32.lib shlwapi.lib propsys.lib
+.\build\audio_output_tests.exe .\build\probe-f50r2QKdkus.aac
+```
+
+This test reads actual renderer channel gains, not MFPlay's cached GetVolume.
+It covers initial mute, 0/25/100%, bounds, paused changes, seek/recovery, a new
+track's initial volume, and unchanged host-session/endpoint volume and mute.
+The synthetic host session belongs to the test process; no Arma session is
+modified. With two active output devices it also exercises non-default routing;
+with one device that portion is explicitly skipped. Some checks briefly play
+audible music; run with an appropriate system output level.
+
+In-game acceptance checks (not covered by the standalone executable):
+
+1. Start music and vary Zeus playlist volume through 0/25/100.
+2. In Esc -> local music settings, disable override, set Zeus to 70 and local
+   to 50, then Apply. Effective music volume should be 35.
+3. Enable local override and Apply: local 50 should give 50, independently of
+   Zeus. Local 0 must mute music in either mode.
+4. Repeat while paused, then resume; advance to the next track and seek.
+5. Confirm game effects/voices and Windows endpoint/session volume are unchanged.
+6. With separate default and Arma output devices, confirm music follows Arma.

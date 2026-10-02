@@ -308,9 +308,9 @@ class A3YT_RscDisplayLocalVolumeSettings
         {
             idc = -1;
             x = safeZoneX + (safeZoneW * 0.5) - 0.21;
-            y = safeZoneY + (safeZoneH * 0.5) - 0.16;
+            y = safeZoneY + (safeZoneH * 0.5) - 0.22;
             w = 0.42;
-            h = 0.32;
+            h = 0.44;
             colorBackground[] = {0,0,0,0.82};
         };
 
@@ -319,7 +319,7 @@ class A3YT_RscDisplayLocalVolumeSettings
             idc = -1;
             text = "$STR_A3YT_PAUSE_LOCAL_VOLUME_TITLE";
             x = safeZoneX + (safeZoneW * 0.5) - 0.21;
-            y = safeZoneY + (safeZoneH * 0.5) - 0.16;
+            y = safeZoneY + (safeZoneH * 0.5) - 0.22;
             w = 0.42;
             h = 0.04;
             colorBackground[] = {0.55,0.36,0.05,0.95};
@@ -328,6 +328,25 @@ class A3YT_RscDisplayLocalVolumeSettings
 
     class Controls
     {
+        class RadioVolumeLabel: RscText
+        {
+            idc = -1;
+            text = "$STR_A3YTR_VOLUME_LOCAL";
+            x = safeZoneX + (safeZoneW * 0.5) - 0.18;
+            y = safeZoneY + (safeZoneH * 0.5) - 0.15;
+            w = 0.26;
+            h = 0.035;
+            colorBackground[] = {0,0,0,0};
+        };
+        class RadioVolumeValue: RscEdit
+        {
+            idc = 2611936;
+            x = safeZoneX + (safeZoneW * 0.5) + 0.08;
+            y = safeZoneY + (safeZoneH * 0.5) - 0.15;
+            w = 0.10;
+            h = 0.035;
+            colorBackground[] = {0,0,0,0.35};
+        };
         class VolumeLabel: RscText
         {
             idc = -1;
@@ -396,7 +415,7 @@ class A3YT_RscDisplayLocalVolumeSettings
             idc = 2611934;
             text = "$STR_A3YT_UI_APPLY";
             x = safeZoneX + (safeZoneW * 0.5) - 0.18;
-            y = safeZoneY + (safeZoneH * 0.5) + 0.09;
+            y = safeZoneY + (safeZoneH * 0.5) + 0.15;
             w = 0.16;
             h = 0.04;
             onButtonClick = "['apply', ctrlParent (_this select 0)] call A3YT_fnc_uiLocalVolumeSettings";
@@ -407,7 +426,7 @@ class A3YT_RscDisplayLocalVolumeSettings
             idc = 2611935;
             text = "$STR_A3YT_UI_CLOSE";
             x = safeZoneX + (safeZoneW * 0.5) + 0.02;
-            y = safeZoneY + (safeZoneH * 0.5) + 0.09;
+            y = safeZoneY + (safeZoneH * 0.5) + 0.15;
             w = 0.16;
             h = 0.04;
             onButtonClick = "closeDialog 0";
