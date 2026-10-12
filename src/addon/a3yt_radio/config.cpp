@@ -3,14 +3,15 @@ class CfgPatches
     class A3YT_radio
     {
         name = "YouTube Player Music Vehicle Radio";
-        requiredVersion = 2.14;
-        requiredAddons[] = {"A3YT_player", "cba_keybinding"};
+        requiredVersion = 2.20;
+        requiredAddons[] = {"A3YT_player", "cba_keybinding", "cba_settings"};
         units[] = {};
         weapons[] = {};
     };
 };
 
 class RscText;
+class RscTextMulti;
 class RscEdit;
 class RscButton;
 class RscListBox;
@@ -20,115 +21,50 @@ class A3YTR_RscRadio
     idd = 2611940;
     movingEnable = 0;
     enableSimulation = 1;
-    onLoad = "['load', _this select 0] call A3YTR_fnc_ui";
-    class ControlsBackground
-    {
-        class Background: RscText
-        {
-            idc = -1;
-            x = safeZoneX + safeZoneW * 0.5 - 0.25;
-            y = safeZoneY + safeZoneH * 0.5 - 0.22;
-            w = 0.5;
-            h = 0.44;
-            colorBackground[] = {0,0,0,0.88};
-        };
-        class Title: RscText
-        {
-            idc = -1;
-            text = "$STR_A3YTR_TITLE";
-            x = safeZoneX + safeZoneW * 0.5 - 0.25;
-            y = safeZoneY + safeZoneH * 0.5 - 0.22;
-            w = 0.5;
-            h = 0.04;
-            colorBackground[] = {0.55,0.36,0.05,0.95};
-        };
-    };
+    onLoad = "['load', _this select 0] call A3YTR_fnc_html";
     class Controls
     {
-        class Url: RscEdit
+        class Browser
+        {
+            type = 106;
+            idc = 2611990;
+            style = 0;
+            deletable = 0;
+            colorBackground[] = {0,0,0,0};
+            x = safeZoneX + safeZoneW * 0.19;
+            y = safeZoneY + safeZoneH * 0.18;
+            w = safeZoneW * 0.62;
+            h = safeZoneH * 0.78;
+            allowExternalURL = 0;
+            url = "";
+        };
+        // Existing asynchronous metadata loader uses these invisible controls.
+        class URL: RscEdit
         {
             idc = 2611941;
-            text = "";
-            x = safeZoneX + safeZoneW * 0.5 - 0.23;
-            y = safeZoneY + safeZoneH * 0.5 - 0.16;
-            w = 0.35;
-            h = 0.04;
+            x = -10; y = -10; w = 0; h = 0;
+            colorBackground[] = {0.082,0.082,0.082,1};
+            colorText[] = {0.86,0.86,0.86,1};
+            colorSelection[] = {0.35,0.35,0.35,1};
+            font = "RobotoCondensed";
+            shadow = 0;
+            canModify = 1;
+            autocomplete = "";
+            onKillFocus = "['draft',ctrlParent (_this select 0)] call A3YTR_fnc_html";
+            onKeyDown = "if ((_this select 1) in [28,156]) then {['add',ctrlParent (_this select 0)] spawn A3YTR_fnc_ui;true} else {false}";
         };
         class Add: RscButton
         {
-            idc = -1;
-            text = "$STR_A3YTR_ADD";
-            x = safeZoneX + safeZoneW * 0.5 + 0.13;
-            y = safeZoneY + safeZoneH * 0.5 - 0.16;
-            w = 0.1;
-            h = 0.04;
-            onButtonClick = "['add', ctrlParent (_this select 0)] spawn A3YTR_fnc_ui";
-        };
-        class Queue: RscListBox
-        {
-            idc = 2611942;
-            x = safeZoneX + safeZoneW * 0.5 - 0.23;
-            y = safeZoneY + safeZoneH * 0.5 - 0.10;
-            w = 0.46;
-            h = 0.18;
-        };
-        class VolumeLabel: RscText
-        {
-            idc = -1;
-            text = "$STR_A3YTR_VOLUME";
-            x = safeZoneX + safeZoneW * 0.5 - 0.23;
-            y = safeZoneY + safeZoneH * 0.5 + 0.09;
-            w = 0.29;
-            h = 0.04;
-        };
-        class Volume: RscEdit
-        {
-            idc = 2611943;
-            text = "70";
-            x = safeZoneX + safeZoneW * 0.5 + 0.12;
-            y = safeZoneY + safeZoneH * 0.5 + 0.09;
-            w = 0.11;
-            h = 0.04;
-        };
-        class Apply: RscButton
-        {
-            idc = -1;
-            text = "$STR_A3YTR_APPLY";
-            x = safeZoneX + safeZoneW * 0.5 - 0.23;
-            y = safeZoneY + safeZoneH * 0.5 + 0.15;
-            w = 0.1;
-            h = 0.04;
-            onButtonClick = "['volume', ctrlParent (_this select 0)] call A3YTR_fnc_ui";
-        };
-        class Next: RscButton
-        {
-            idc = -1;
-            text = "$STR_A3YTR_NEXT";
-            x = safeZoneX + safeZoneW * 0.5 - 0.12;
-            y = safeZoneY + safeZoneH * 0.5 + 0.15;
-            w = 0.1;
-            h = 0.04;
-            onButtonClick = "['next', ctrlParent (_this select 0)] call A3YTR_fnc_ui";
-        };
-        class Stop: RscButton
-        {
-            idc = -1;
-            text = "$STR_A3YTR_STOP";
-            x = safeZoneX + safeZoneW * 0.5 - 0.01;
-            y = safeZoneY + safeZoneH * 0.5 + 0.15;
-            w = 0.1;
-            h = 0.04;
-            onButtonClick = "['stop', ctrlParent (_this select 0)] call A3YTR_fnc_ui";
-        };
-        class Close: RscButton
-        {
-            idc = -1;
-            text = "$STR_A3YT_UI_CLOSE";
-            x = safeZoneX + safeZoneW * 0.5 + 0.10;
-            y = safeZoneY + safeZoneH * 0.5 + 0.15;
-            w = 0.13;
-            h = 0.04;
-            onButtonClick = "closeDialog 0";
+            idc = 2611958;
+            x = -10; y = -10; w = 0; h = 0;
+            text = "Add";
+            colorBackground[] = {0.22,0.22,0.21,1};
+            colorBackgroundActive[] = {0.26,0.26,0.25,1};
+            colorBackgroundDisabled[] = {0.16,0.16,0.16,1};
+            colorText[] = {0.82,0.82,0.80,1};
+            font = "RobotoCondensed";
+            shadow = 0;
+            onButtonClick = "['add',ctrlParent (_this select 0)] spawn A3YTR_fnc_ui";
         };
     };
 };
@@ -142,9 +78,15 @@ class CfgFunctions
         {
             file = "\a3yt_radio\functions";
             class postInit {postInit = 1;};
+            class preInit {preInit = 1;};
+            class open {};
+            class advance {};
+            class tick {};
+            class seek {};
             class command {};
             class listener {};
             class ui {};
+            class html {};
         };
     };
 };

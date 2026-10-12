@@ -8,10 +8,10 @@
     <Company>Alpha</Company>
     <Product>YouTube Player Music</Product>
     <Copyright>Copyright (C) Alpha</Copyright>
-    <Version>0.7.2</Version>
-    <FileVersion>0.7.2.0</FileVersion>
-    <AssemblyVersion>0.7.2.0</AssemblyVersion>
-    <InformationalVersion>0.7.2</InformationalVersion>
+    <Version>0.7.3</Version>
+    <FileVersion>0.7.3.0</FileVersion>
+    <AssemblyVersion>0.7.3.0</AssemblyVersion>
+    <InformationalVersion>0.7.3</InformationalVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>

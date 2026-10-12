@@ -28,7 +28,7 @@
 
 namespace {
 
-constexpr char kVersion[] = "A3YTPlayer 0.7.2";
+constexpr char kVersion[] = "A3YTPlayer 0.7.3";
 constexpr char kPlaylistMetaSeparator = '\x1D';
 constexpr char kPlaylistRecordSeparator = '\x1E';
 constexpr char kPlaylistFieldSeparator = '\x1F';
@@ -1033,7 +1033,8 @@ bool ResolvePlaylist(
     std::uint64_t* token,
     std::string* playlistTitle,
     std::size_t* itemCount,
-    std::string* errorMessage) {
+    std::string* errorMessage,
+    std::vector<PlaylistEntry>* resolvedItems = nullptr) {
     std::vector<char> buffer(1024 * 1024, '\0');
     const int status = YPM3(input.c_str(), buffer.data(), static_cast<int>(buffer.size()));
     const std::string payload(buffer.data());
@@ -1090,6 +1091,13 @@ bool ResolvePlaylist(
 
     if (title.empty()) {
         title = items.front().title;
+    }
+
+    if (resolvedItems != nullptr) {
+        if (playlistTitle != nullptr) *playlistTitle = title;
+        if (itemCount != nullptr) *itemCount = items.size();
+        *resolvedItems = std::move(items);
+        return true;
     }
 
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -2202,6 +2210,86 @@ std::string GetTimeline() {
     return timeline;
 }
 
+// Metadata resolution must never run on Arma's callExtension thread.
+// Each request owns its playlist: radio imports cannot replace Zeus's cache.
+struct RadioLoad {
+    bool done = false;
+    bool released = false;
+    std::vector<PlaylistEntry> items;
+    std::string error;
+    std::chrono::steady_clock::time_point completedAt;
+};
+std::mutex g_radioLoadMutex;
+std::unordered_map<std::uint64_t, std::shared_ptr<RadioLoad>> g_radioLoads;
+std::uint64_t g_radioLoadToken = 0;
+
+std::pair<std::string, int> HandleRadioLoad(const std::string& command, const std::vector<std::string>& args) {
+    if (command == "radioload") {
+        if (args.size() != 2 || args[0].empty() || args[0].size() > 2048 ||
+            (args[1] != "0" && args[1] != "1")) return {"err|invalid_radio_load", 2};
+        std::lock_guard<std::mutex> lock(g_radioLoadMutex);
+        const auto now = std::chrono::steady_clock::now();
+        for (auto it = g_radioLoads.begin(); it != g_radioLoads.end();) {
+            if (it->second->done && now - it->second->completedAt > std::chrono::minutes(2))
+                it = g_radioLoads.erase(it);
+            else ++it;
+        }
+        if (g_radioLoads.size() >= 4) return {"err|radio_load_limit", 2};
+        const auto token = ++g_radioLoadToken;
+        auto request = std::make_shared<RadioLoad>();
+        g_radioLoads[token] = request;
+        const std::string url = args[0];
+        const bool playlist = args[1] == "1";
+        try {
+            std::thread([request, token, url, playlist] {
+                std::vector<PlaylistEntry> items;
+                std::string error;
+                try {
+                    if (playlist) {
+                        ResolvePlaylist(url, nullptr, nullptr, nullptr, &error, &items);
+                        if (items.size() > 32) items.resize(32);
+                    } else {
+                        std::string title;
+                        // A failed title lookup must not prevent a playable URL being added.
+                        ResolveTrackTitle(url, &title, &error);
+                        items.push_back({url, title.empty() ? url : title});
+                        error.clear();
+                    }
+                } catch (...) { error = "err|radio_load_exception"; }
+                std::lock_guard<std::mutex> guard(g_radioLoadMutex);
+                request->items = std::move(items);
+                request->error = std::move(error);
+                request->done = true;
+                request->completedAt = std::chrono::steady_clock::now();
+                if (request->released) g_radioLoads.erase(token);
+            }).detach();
+        } catch (...) {
+            g_radioLoads.erase(token);
+            return {"err|radio_load_worker", 2};
+        }
+        return {"ok|radioloadqueued|" + std::to_string(token), 0};
+    }
+    std::uint64_t token = 0;
+    if (args.empty() || !TryParseUInt64Strict(args[0], &token)) return {"err|invalid_radio_load_token", 2};
+    std::lock_guard<std::mutex> lock(g_radioLoadMutex);
+    auto found = g_radioLoads.find(token);
+    if (found == g_radioLoads.end() || found->second->released) return {"err|radio_load_missing", 2};
+    auto& request = *found->second;
+    if (command == "radioloadrelease") {
+        request.released = true;
+        if (request.done) g_radioLoads.erase(found);
+        return {"ok|radioloadreleased", 0};
+    }
+    if (!request.done) return {"ok|radioload|pending", 0};
+    if (!request.error.empty() || request.items.empty()) return {"err|radio_load_failed|" + Sanitize(request.error), 2};
+    if (command == "radioloadstatus") return {"ok|radioload|ready|" + std::to_string(request.items.size()), 0};
+    int index = -1;
+    if (args.size() < 2 || !TryParseIntStrict(args[1], &index) || index < 0 ||
+        index >= static_cast<int>(request.items.size())) return {"err|radio_load_item_missing", 2};
+    const auto& entry = request.items[static_cast<std::size_t>(index)];
+    return {"ok|radioloaditem|" + entry.url + "|" + entry.title, 0};
+}
+
 // Vehicle radio is intentionally separate from the Zeus queue. Each audible
 // vehicle owns one MFPlay instance; the SQF listener drops distant instances.
 struct RadioChannel {
@@ -2347,6 +2435,9 @@ std::pair<std::string, int> HandleCommand(const std::string& command, const std:
         radioCommand == "radiostop" || radioCommand == "radiostatus")
         return HandleRadioCommand(radioCommand, args);
     const std::string lower = a3yt::ToLowerAscii(command);
+
+    if (lower == "radioload" || lower == "radioloadstatus" ||
+        lower == "radioloaditem" || lower == "radioloadrelease") return HandleRadioLoad(lower, args);
 
     if (lower == "audiooutput") {
         std::lock_guard<std::mutex> lock(g_mutex);

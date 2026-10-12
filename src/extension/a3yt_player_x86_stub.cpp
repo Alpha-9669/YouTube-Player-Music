@@ -11,7 +11,7 @@
 
 namespace {
 
-constexpr char kVersion[] = "A3YTPlayer 0.7.2 x86-compat";
+constexpr char kVersion[] = "A3YTPlayer 0.7.3 x86-compat";
 constexpr char kUnsupported[] = "err|unsupported|x86_client_not_supported_use_x64";
 
 std::string HandleCommand(const std::string& rawCommand) {
@@ -59,7 +59,8 @@ std::string HandleCommand(const std::string& rawCommand) {
         return "ok|title|" + title;
     }
 
-    if (command == "playlistload" || command == "playlistitem" || command == "seek") {
+    if (command == "playlistload" || command == "playlistitem" || command == "seek" ||
+        command == "radioload" || command == "radioloadstatus" || command == "radioloaditem" || command == "radioloadrelease") {
         return kUnsupported;
     }
 

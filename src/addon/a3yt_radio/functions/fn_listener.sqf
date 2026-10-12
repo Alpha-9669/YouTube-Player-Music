@@ -8,9 +8,11 @@ while {hasInterface} do {
         _state params ["_queue", "_index", "_volume", "_started", "_generation"];
         private _radius = 50 * ((_volume max 0) min 100) / 100;
         private _inside = (objectParent player) isEqualTo _vehicle;
-        if (isEngineOn _vehicle && {alive _vehicle} && {_index < count _queue} && {_radius > 0} && {_inside || {player distance _vehicle < _radius}}) then {
+        private _powered = !(missionNamespace getVariable ["A3YTR_requireEngine", true]) || {isEngineOn _vehicle};
+        if (_powered && {(_state param [6,-1]) < 0} && {alive _vehicle} && {_index >= 0} && {_index < count _queue} && {_radius > 0} && {_inside || {player distance _vehicle < _radius}}) then {
             private _id = (netId _vehicle splitString ":") joinString "_";
-            private _url = _queue select _index;
+            private _entry = _queue select _index;
+            private _url = if (_entry isEqualType []) then {_entry param [0, ""]} else {_entry};
             private _old = _channels getOrDefault [_id, [-1, "", false, false, -10]];
             if (_old select 0 isNotEqualTo _generation || {(_old select 1) isNotEqualTo _url}) then {
                 private _offset = round (((serverTime - _started) max 0) * 1000);
